@@ -160,6 +160,16 @@ input:focus, select:focus { outline: 2px solid var(--brand); outline-offset: -1p
 .inline-form { display: flex; gap: 8px; margin: 8px 0; }
 .inline-form input { flex: 1; }
 .calc-result { background: var(--brand-soft); border-radius: 12px; padding: 10px 12px; margin: 12px 0 0; }
+/* sync */
+.code-box {
+  display: block; margin-top: 6px; padding: 12px; border-radius: 12px; background: var(--surface-2);
+  border: 1px dashed var(--line); color: var(--text); text-align: center;
+  font: 600 clamp(.82rem, 4vw, 1rem)/1.4 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  user-select: all; white-space: nowrap; overflow-x: auto;
+}
+.sync-status { margin: 0 0 4px; font-size: .92rem; }
+.sync-status.ok { color: var(--brand); }
+.sync-status.err { color: var(--warn); }
 details summary { cursor: pointer; font-weight: 600; min-height: 32px; }
 
 .chart-box { position: relative; height: 200px; margin-top: 8px; }

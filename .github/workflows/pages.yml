@@ -21,8 +21,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm ci
       - name: Unit tests
-        run: node --test tests/unit/*.test.js
+        run: npm test
       - name: Publish to gh-pages
         run: |
           mkdir _site

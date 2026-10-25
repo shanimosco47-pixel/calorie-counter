@@ -199,7 +199,7 @@ test('settings: export a backup and import it back', async ({ page }, info) => {
   expect(data.entries).toHaveLength(1);
 
   // wipe, then restore
-  await page.evaluate(async () => { const { db } = await import('./lib/db.js'); await db.entries.clear(); });
+  await page.evaluate(async () => { const { db } = await import('./lib/db.js'); await db.log.clear(); });
   await page.getByTestId('nav-today').click();
   await expect(page.getByTestId('eaten')).toHaveText('0');
   await page.getByTestId('nav-settings').click();

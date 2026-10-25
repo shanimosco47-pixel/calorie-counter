@@ -129,9 +129,34 @@
         <button class="btn" data-testid="target-save">שמירת יעד</button>
       </form>
 
+      <div class="card form" id="sync-card" data-testid="sync-card">
+        <h2>סנכרון לענן</h2>
+        <div id="sync-off">
+          <p class="muted">גיבוי אוטומטי לענן וסנכרון בין מכשירים, בלי חשבון ובלי סיסמה: האפליקציה יוצרת קוד סודי, וכל מכשיר שמזינים בו את הקוד רואה את אותם נתונים.</p>
+          <div class="action-row">
+            <button type="button" class="btn" id="sync-create" data-testid="sync-create">הפעלת סנכרון</button>
+            <button type="button" class="btn secondary" id="sync-join-open" data-testid="sync-join-open">יש לי קוד</button>
+          </div>
+          <form class="inline-form" id="sync-join-form" hidden>
+            <input id="sync-join-code" data-testid="sync-join-code" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" dir="ltr" required>
+            <button class="btn" data-testid="sync-join">חיבור</button>
+          </form>
+        </div>
+        <div id="sync-on" hidden>
+          <p class="sync-status" id="sync-status" data-testid="sync-status"></p>
+          <label>קוד הסנכרון שלך<output class="code-box" dir="ltr" id="sync-code" data-testid="sync-code"></output></label>
+          <p class="muted">שמרו את הקוד במקום בטוח, למשל שלחו אותו לעצמכם במייל. בעזרתו מחברים טלפון חדש. מי שמחזיק בקוד יכול לראות את הנתונים.</p>
+          <div class="action-row">
+            <button type="button" class="btn secondary" id="sync-share" data-testid="sync-share">שמירת הקוד</button>
+            <button type="button" class="btn secondary" id="sync-now" data-testid="sync-now">סנכרון עכשיו</button>
+          </div>
+          <button type="button" class="btn secondary block" id="sync-disconnect" data-testid="sync-disconnect">ניתוק המכשיר מהסנכרון</button>
+        </div>
+      </div>
+
       <div class="card form">
         <h2>גיבוי</h2>
-        <p class="muted">הנתונים נשמרים רק בטלפון. מומלץ לייצא גיבוי מדי פעם.</p>
+        <p class="muted">קובץ גיבוי ידני, לשמירה מחוץ לאפליקציה.</p>
         <div class="action-row">
           <button class="btn secondary" id="export-btn" data-testid="export-btn">ייצוא גיבוי</button>
           <label class="btn secondary file-btn">ייבוא גיבוי

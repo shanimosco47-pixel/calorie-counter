@@ -1,4 +1,6 @@
-import { db, getSetting, setSetting, dumpAll, restoreAll, recentFoods } from './lib/db.js';
+import { store, db, put, remove, newId, getSetting, setSetting, dumpAll, restoreAll, recentFoods } from './lib/db.js';
+import { createSync } from './lib/sync.js';
+import { supabaseRemote } from './lib/remote.js';
 import { buildIndex, matchFood } from './lib/match.js';
 import {
   MEALS, ACTIVITY, GOALS, gramsFor, nutrientsFor, sumEntries, totalsByMeal, dailyTarget,
@@ -6,7 +8,7 @@ import {
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -92,6 +94,63 @@ function toast(text, undo) {
   toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
 }
 
+// ---------- cloud sync ----------
+
+const sync = createSync(store, supabaseRemote(), {
+  onStatus: renderSyncStatus,
+  onApplied: async () => {
+    await refreshMyFoods();
+    await loadTarget();
+    if (state.view === 'today') renderToday();
+    else if (state.view === 'history') renderHistory();
+    else if (state.view === 'add') renderResults();
+  },
+});
+window.kaloritSync = sync;   // for tests
+
+function timeText(ms) {
+  const d = new Date(ms);
+  const sameDay = isoDate(d) === isoDate();
+  return sameDay ? d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' }) + ' ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+}
+
+async function renderSyncStatus(st) {
+  st = st || await sync.status();
+  $('#sync-off').hidden = !!st.code;
+  $('#sync-on').hidden = !st.code;
+  if (!st.code) return;
+  $('#sync-code').textContent = st.code;
+  const el = $('#sync-status');
+  if (st.lastError) {
+    el.className = 'sync-status err';
+    el.textContent = `⚠️ לא סונכרן: ${st.lastError}. ננסה שוב אוטומטית.`;
+  } else if (st.lastSync) {
+    el.className = 'sync-status ok';
+    el.textContent = `✓ מסונכרן · עודכן ב-${timeText(st.lastSync)}` + (st.pending ? ` · ${st.pending} שינויים ממתינים` : '');
+  } else {
+    el.className = 'sync-status';
+    el.textContent = 'מסנכרן…';
+  }
+}
+
+async function connectSync(code) {
+  const res = await sync.connect(code);
+  if (res?.error) toast('הסנכרון הופעל, אבל השרת לא זמין כרגע. ננסה שוב אוטומטית.');
+  else toast(res?.changed ? `הסנכרון הופעל ✓ התקבלו ${res.changed} פריטים` : 'הסנכרון הופעל ✓');
+  await renderSyncStatus();
+}
+
+async function shareCode() {
+  const code = (await sync.status()).code;
+  const text = `קוד הסנכרון של קלורית: ${code}`;
+  try {
+    if (navigator.share) { await navigator.share({ title: 'קלורית', text }); return; }
+  } catch (err) { if (err.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(code); toast('הקוד הועתק'); }
+  catch { toast('סמנו את הקוד והעתיקו אותו'); }
+}
+
 // ---------- navigation ----------
 
 function show(view) {
@@ -130,7 +189,7 @@ function setDate(iso) {
 
 async function renderToday() {
   renderDate();
-  const entries = await db.entries.where('date').equals(state.date).sortBy('ts');
+  const entries = await db.log.where('date').equals(state.date).sortBy('ts');
   const total = sumEntries(entries);
   const byMeal = totalsByMeal(entries);
   const remaining = state.target - total.kcal;
@@ -183,14 +242,14 @@ async function renderQuick() {
 }
 
 async function quickAdd(entryId) {
-  const src = await db.entries.get(entryId);
+  const src = await db.log.get(entryId);
   if (!src) return;
   const meal = state.date === isoDate() ? mealForHour(new Date().getHours()) : src.meal;
-  const { id, ...copy } = src;
-  const newId = await db.entries.add({ ...copy, date: state.date, meal, ts: Date.now() });
+  const { id, mt, ...copy } = src;
+  const added = await put('entries', { ...copy, id: newId(), date: state.date, meal, ts: Date.now() });
   await renderToday();
   const mealLabel = MEALS.find((m) => m.id === meal).label;
-  toast(`נוסף ל${mealLabel}: ${src.name.split(',')[0]}`, async () => { await db.entries.delete(newId); renderToday(); });
+  toast(`נוסף ל${mealLabel}: ${src.name.split(',')[0]}`, async () => { await remove('entries', added.id); renderToday(); });
 }
 
 // ---------- add / search ----------
@@ -284,10 +343,10 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
     if (!star) return;
     const id = star.dataset.star;
     const food = state.byId.get(id) || rows.find((r) => r.food.id === id)?.food;
-    if (state.favIds.has(id)) { await db.favorites.delete(id); state.favIds.delete(id); }
+    if (state.favIds.has(id)) { await remove('favorites', id); state.favIds.delete(id); }
     else {
-      if (food && !food.id.startsWith('t')) await db.myFoods.put(food);
-      await db.favorites.put({ foodId: id }); state.favIds.add(id);
+      if (food && !food.id.startsWith('t') && !state.myFoods.some((f) => f.id === food.id)) await put('myFoods', food);
+      await put('favorites', { foodId: id }); state.favIds.add(id);
     }
     star.setAttribute('aria-pressed', state.favIds.has(id));
   };
@@ -301,13 +360,16 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
       const ids = [];
       for (const r of rows) {
         if (r.grams <= 0) continue;
-        if (!r.food.id.startsWith('t') && !state.byId.has(r.food.id)) await db.myFoods.put(r.food);
+        if (!r.food.id.startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
         const entry = {
           date: state.date, meal: mealId, foodId: r.food.id, name: r.food.n,
           amount: r.amount, unit: r.unit, grams: r.grams, ...r.n, ts: Date.now(),
         };
-        if (editId) { await db.entries.update(editId, entry); ids.push(editId); }
-        else ids.push(await db.entries.add(entry));
+        if (editId) {
+          const prev = await db.log.get(editId);
+          await put('entries', { ...prev, ...entry, id: editId, ts: prev?.ts ?? entry.ts });
+          ids.push(editId);
+        } else ids.push((await put('entries', { id: newId(), ...entry })).id);
       }
       await refreshMyFoods();
       resolve(ids);
@@ -374,7 +436,7 @@ async function handleBarcode(code) {
   }
   await closeScanner();
   if (food) {
-    await db.myFoods.put(food);
+    await put('myFoods', food);
     await refreshMyFoods();
     confirmItems([{ food }]);
   } else {
@@ -408,7 +470,7 @@ async function saveFoodForm(ev) {
   const unitName = $('#ff-unit').value.trim();
   const unitG = num('#ff-unit-g');
   if (unitName && unitG > 0) food.m.push(['u1', unitG, unitName]);
-  await db.myFoods.put(food);
+  await put('myFoods', food);
   await refreshMyFoods();
   $('#food-sheet').close();
   confirmItems([{ food }]);
@@ -430,7 +492,7 @@ function drawChart(key, canvas, config) {
 async function renderHistory() {
   const days = [];
   for (let i = state.range - 1; i >= 0; i--) days.push(addDays(isoDate(), -i));
-  const entries = await db.entries.where('date').between(days[0], days[days.length - 1], true, true).toArray();
+  const entries = await db.log.where('date').between(days[0], days[days.length - 1], true, true).toArray();
   const totals = days.map((d) => sumEntries(entries.filter((e) => e.date === d)).kcal);
   const logged = totals.filter((t) => t > 0);
   const avg = logged.length ? logged.reduce((a, b) => a + b, 0) / logged.length : 0;
@@ -455,9 +517,9 @@ async function renderHistory() {
     },
   });
 
-  const recentDays = [...new Set((await db.entries.orderBy('date').reverse().limit(2000).toArray()).map((e) => e.date))].slice(0, 30);
+  const recentDays = [...new Set((await db.log.orderBy('date').reverse().limit(2000).toArray()).map((e) => e.date))].slice(0, 30);
   $('#day-list').innerHTML = recentDays.length ? (await Promise.all(recentDays.map(async (d) => {
-    const t = sumEntries(await db.entries.where('date').equals(d).toArray()).kcal;
+    const t = sumEntries(await db.log.where('date').equals(d).toArray()).kcal;
     const label = new Date(d + 'T12:00:00').toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'numeric' });
     return `<li><button class="row" data-goto="${d}"><span class="grow">${label}</span><span class="kcal">${fmt(t)} קק״ל</span></button></li>`;
   }))).join('') : '<li class="muted">אין עדיין ימים קודמים</li>';
@@ -492,6 +554,7 @@ async function renderSettings() {
   $('#manual-target').value = (await getSetting('manualTarget', null)) || state.target;
   $('#api-key').value = (await getSetting('apiKey', '')) || '';
   $('#app-version').textContent = APP_VERSION;
+  renderSyncStatus();
   setTargetMode(mode);
   updateCalcPreview();
 }
@@ -526,7 +589,7 @@ async function saveTarget(ev) {
   else {
     const p = readProfile();
     await setSetting('profile', p);
-    if (!(await db.weights.count())) await db.weights.put({ date: isoDate(), kg: p.weight });
+    if (!(await db.weights.count())) await put('weights', { date: isoDate(), kg: p.weight });
   }
   await loadTarget();
   toast(`היעד נשמר: ${fmt(state.target)} קק״ל`);
@@ -575,19 +638,19 @@ function bind() {
     const edit = e.target.closest('[data-edit]');
     if (add) { state.addMeal = add.dataset.addMeal; show('add'); $('#search').focus(); }
     else if (del) {
-      const entry = await db.entries.get(Number(del.dataset.del));
-      await db.entries.delete(entry.id);
+      const entry = await db.log.get(del.dataset.del);
+      await remove('entries', entry.id);
       renderToday();
-      toast('הפריט נמחק', async () => { await db.entries.put(entry); renderToday(); });
+      toast('הפריט נמחק', async () => { await put('entries', entry); renderToday(); });
     } else if (edit) {
-      const entry = await db.entries.get(Number(edit.dataset.edit));
+      const entry = await db.log.get(edit.dataset.edit);
       const food = state.byId.get(entry.foodId);
       if (food) confirmItems([{ food, amount: entry.amount, unit: entry.unit }], { meal: entry.meal, editId: entry.id });
     }
   });
   $('#quick').addEventListener('click', (e) => {
     const chip = e.target.closest('[data-quick]');
-    if (chip) quickAdd(Number(chip.dataset.quick));
+    if (chip) quickAdd(chip.dataset.quick);
   });
 
   $('#meal-picker').addEventListener('click', (e) => {
@@ -628,14 +691,14 @@ function bind() {
     e.preventDefault();
     const kg = Number($('#weight-input').value);
     if (!(kg > 0)) return;
-    await db.weights.put({ date: isoDate(), kg });
+    await put('weights', { date: isoDate(), kg });
     $('#weight-input').value = '';
     toast(`נשמר: ${kg} ק״ג`);
     renderWeights();
   };
   $('#weight-list').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-del-weight]');
-    if (b) { await db.weights.delete(b.dataset.delWeight); renderWeights(); }
+    if (b) { await remove('weights', b.dataset.delWeight); renderWeights(); }
   });
 
   $('#target-mode').addEventListener('click', (e) => {
@@ -646,11 +709,32 @@ function bind() {
   $('#target-form').onsubmit = saveTarget;
   $('#export-btn').onclick = exportBackup;
   $('#import-input').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
+  $('#sync-create').onclick = () => connectSync(sync.generateCode());
+  $('#sync-join-open').onclick = () => { $('#sync-join-form').hidden = false; $('#sync-join-code').focus(); };
+  $('#sync-join-form').onsubmit = async (e) => {
+    e.preventDefault();
+    try { await connectSync($('#sync-join-code').value); $('#sync-join-form').hidden = true; $('#sync-join-code').value = ''; }
+    catch (err) { toast(err.message); }
+  };
+  $('#sync-share').onclick = shareCode;
+  $('#sync-now').onclick = async () => {
+    const res = await sync.syncNow();
+    toast(res?.error ? 'הסנכרון נכשל, ננסה שוב' : 'סונכרן ✓');
+  };
+  $('#sync-disconnect').onclick = async () => {
+    if (!confirm('לנתק את המכשיר מהסנכרון? הנתונים יישארו בטלפון ובענן. כדי להתחבר שוב תצטרכו את הקוד.')) return;
+    await sync.disconnect();
+    toast('המכשיר נותק מהסנכרון');
+  };
+  window.addEventListener('online', () => sync.syncNow());
+
   $('#api-key-save').onclick = async () => { await setSetting('apiKey', $('#api-key').value.trim()); toast('המפתח נשמר בטלפון'); };
 
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.view === 'today') renderToday();
+    if (document.visibilityState !== 'visible') return;
+    if (state.view === 'today') renderToday();
+    sync.syncNow();
   });
 }
 
@@ -659,6 +743,8 @@ async function start() {
   await Promise.all([loadFoods(), loadTarget()]);
   document.body.dataset.ready = '1';
   show('today');
+  renderSyncStatus();
+  sync.syncNow();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
