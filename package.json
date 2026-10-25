@@ -1,0 +1,22 @@
+{
+  "name": "kalorit",
+  "version": "1.0.0",
+  "description": "מעקב קלוריות בעברית",
+  "scripts": {
+    "test": "node --test tests/unit/*.test.js",
+    "test:e2e": "playwright test",
+    "serve": "python3 -m http.server 4173"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "chart.js": "^4.4.4",
+    "dexie": "^4.0.8",
+    "html5-qrcode": "^2.3.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  },
+  "type": "module",
+  "private": true
+}
