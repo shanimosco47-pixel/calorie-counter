@@ -1,11 +1,11 @@
 {
-  "id": "/calorie-counter/",
+  "id": "/calorie-counter/kalorit-app",
   "name": "קלורית: מעקב קלוריות",
   "short_name": "קלורית",
   "description": "מעקב קלוריות בעברית עם מאגר המזון הישראלי צמרת",
   "lang": "he",
   "dir": "rtl",
-  "start_url": "/calorie-counter/",
+  "start_url": "/calorie-counter/?source=pwa",
   "scope": "/calorie-counter/",
   "display": "standalone",
   "orientation": "portrait",

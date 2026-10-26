@@ -4,7 +4,7 @@ const test = base.extend({});
 test.use({ serviceWorkers: 'allow' });
 
 test('manifest is valid for installation', async ({ request }) => {
-  const res = await request.get('/manifest.webmanifest');
+  const res = await request.get('/kalorit.webmanifest');
   expect(res.ok()).toBe(true);
   const m = await res.json();
   expect(m.name).toBeTruthy();
@@ -12,8 +12,8 @@ test('manifest is valid for installation', async ({ request }) => {
   expect(m.dir).toBe('rtl');
   expect(m.lang).toBe('he');
   expect(m.display).toBe('standalone');
-  expect(m.id).toBe('/calorie-counter/');
-  expect(m.start_url).toBe('/calorie-counter/');
+  expect(m.id).toBe('/calorie-counter/kalorit-app');
+  expect(m.start_url).toBe('/calorie-counter/?source=pwa');
   expect(m.scope).toBe('/calorie-counter/');
   const sizes = m.icons.map((i) => i.sizes);
   expect(sizes).toContain('192x192');
