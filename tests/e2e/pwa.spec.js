@@ -12,7 +12,9 @@ test('manifest is valid for installation', async ({ request }) => {
   expect(m.dir).toBe('rtl');
   expect(m.lang).toBe('he');
   expect(m.display).toBe('standalone');
-  expect(m.start_url).toBeTruthy();
+  expect(m.id).toBe('/calorie-counter/');
+  expect(m.start_url).toBe('/calorie-counter/');
+  expect(m.scope).toBe('/calorie-counter/');
   const sizes = m.icons.map((i) => i.sizes);
   expect(sizes).toContain('192x192');
   expect(sizes).toContain('512x512');
