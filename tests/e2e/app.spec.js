@@ -248,3 +248,19 @@ test('install button appears when Chrome allows installing and starts the instal
   expect(await page.evaluate(() => window.__prompted)).toBe(true);
   await expect(page.getByTestId('install-card')).toBeHidden();
 });
+
+test('egg dishes are measured in eggs', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('search').fill('חביתה בשמן זית');
+  await page.getByTestId('result').first().click();
+  await expect(page.getByTestId('confirm-sheet')).toContainText('חביתה מטוגנת בשמן זית');
+  await expect(page.getByTestId('unit')).toHaveValue('egg');
+  await expect(page.getByTestId('unit').locator('option:checked')).toContainText('ביצה');
+  await expect(page.getByTestId('amount')).toHaveValue('2');
+  await expect(page.getByTestId('confirm-total')).toHaveText('144');      // 2 x 37 g x 194 kcal/100 g
+  await page.getByTestId('amount').fill('3');
+  await expect(page.getByTestId('confirm-total')).toHaveText('215');
+  await page.getByTestId('confirm-save').click();
+  await expect(page.getByTestId('entry')).toContainText('3 × ביצה');
+});

@@ -4,11 +4,11 @@ import { supabaseRemote } from './lib/remote.js';
 import { buildIndex, matchFood } from './lib/match.js';
 import {
   MEALS, ACTIVITY, GOALS, gramsFor, nutrientsFor, sumEntries, totalsByMeal, dailyTarget,
-  macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup,
+  macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
 
-export const APP_VERSION = '1.5.0';
+export const APP_VERSION = '1.7.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -73,12 +73,6 @@ function amountText(e) {
   return `${e.amount} × ${unitLabel(food, e.unit)} (${fmt(e.grams)} ג׳)`;
 }
 
-function defaultAmount(food) {
-  // Prefer a "medium/standard" household measure so the first suggestion is realistic.
-  const prefer = ['u1', '103', '100', '500', '502', '800', '802', '1226', 'serving', '300', '200'];
-  for (const code of prefer) if ((food.m || []).some(([c]) => String(c) === code)) return { amount: 1, unit: code };
-  return { amount: 100, unit: 'g' };
-}
 
 // ---------- toast ----------
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  gramsFor, nutrientsFor, sumEntries, totalsByMeal, bmr, dailyTarget, MIN_TARGET,
+  defaultAmount, gramsFor, nutrientsFor, sumEntries, totalsByMeal, bmr, dailyTarget, MIN_TARGET,
   mealForHour, addDays, makeBackup, parseBackup,
 } from '../../lib/calc.js';
 
@@ -79,4 +79,26 @@ test('parseBackup rejects foreign or broken files', () => {
   assert.throws(() => parseBackup({ app: 'kalorit', version: 99 }));
   assert.throws(() => parseBackup({ app: 'kalorit', version: 1, entries: 'x' }));
   assert.throws(() => parseBackup('not json'));
+});
+
+test('defaultAmount picks the natural household measure', () => {
+  const f = (m, kcal = 100) => ({ id: 'x', n: 'x', kcal, m });
+  assert.deepEqual(defaultAmount(f([])), { amount: 100, unit: 'g' });
+  // medium unit beats cup, spoon and package
+  assert.deepEqual(defaultAmount(f([['200', 240], ['300', 15], ['103', 120], ['900', 750]])), { amount: 1, unit: '103' });
+  // slice for bread, not the whole loaf
+  assert.deepEqual(defaultAmount(f([['502', 30], ['900', 750]], 250)), { amount: 1, unit: '502' });
+  // bottle and cup containers count as one serving
+  assert.deepEqual(defaultAmount(f([['1100', 100]])), { amount: 1, unit: '1100' });
+  // a 250 g tub of cottage is not one serving: tablespoon wins
+  assert.deepEqual(defaultAmount(f([['300', 40], ['600', 250]])), { amount: 1, unit: '300' });
+  // a cup of olive oil (1,900 kcal) is not a serving
+  assert.deepEqual(defaultAmount(f([['200', 216], ['300', 10]], 884)), { amount: 1, unit: '300' });
+  // one grape is too small; a cup of grapes is natural
+  assert.deepEqual(defaultAmount(f([['103', 7], ['200', 142]], 69)), { amount: 1, unit: '200' });
+  // egg dishes default to two eggs; borrowed units work like their originals
+  assert.deepEqual(defaultAmount(f([['egg', 37, 'ביצה'], ['801', 48]])), { amount: 2, unit: 'egg' });
+  assert.deepEqual(defaultAmount(f([['b502', 23, '≈ פרוסה'], ['b900', 600]])), { amount: 1, unit: 'b502' });
+  // nothing sensible: fall back to grams
+  assert.deepEqual(defaultAmount(f([['900', 750]])), { amount: 100, unit: 'g' });
 });
