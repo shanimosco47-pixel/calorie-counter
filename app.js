@@ -8,7 +8,7 @@ import {
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
 
-export const APP_VERSION = '1.7.0';
+export const APP_VERSION = '1.7.1';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -64,7 +64,8 @@ function unitLabel(food, code) {
   const m = (food.m || []).find(([c]) => String(c) === String(code));
   if (m && m[2]) return m[2];
   if (code === 'serving') return 'מנה (לפי היצרן)';
-  return state.units[code] || String(code);
+  if (code === 'egg') return 'ביצה';
+  return state.units[String(code).replace(/^b/, '')] || String(code);
 }
 
 function amountText(e) {
@@ -325,7 +326,13 @@ async function renderResults() {
 export function confirmItems(items, { meal = state.addMeal, editId = null } = {}) {
   const sheet = $('#confirm-sheet');
   const box = $('#confirm-items');
-  const rows = items.map((it) => ({ food: it.food, ...defaultAmount(it.food), ...(it.amount != null ? { amount: it.amount, unit: it.unit || 'g' } : {}) }));
+  const known = (food, unit) => unit === 'g' || (food.m || []).some(([c]) => String(c) === String(unit));
+  const rows = items.map((it) => {
+    if (it.amount == null) return { food: it.food, ...defaultAmount(it.food) };
+    // a unit this device's food data lacks (logged on a newer version): edit the same grams
+    if (!known(it.food, it.unit || 'g')) return { food: it.food, amount: it.grams ?? it.amount, unit: 'g' };
+    return { food: it.food, amount: it.amount, unit: it.unit || 'g' };
+  });
 
   $('#confirm-title').textContent = editId ? 'עריכת פריט' : 'הוספה ליומן';
   $('#confirm-save').textContent = editId ? 'שמירה' : 'הוספה ליומן';
@@ -669,7 +676,7 @@ function bind() {
     } else if (edit) {
       const entry = await db.log.get(edit.dataset.edit);
       const food = state.byId.get(entry.foodId);
-      if (food) confirmItems([{ food, amount: entry.amount, unit: entry.unit }], { meal: entry.meal, editId: entry.id });
+      if (food) confirmItems([{ food, amount: entry.amount, unit: entry.unit, grams: entry.grams }], { meal: entry.meal, editId: entry.id });
     }
   });
   $('#quick').addEventListener('click', (e) => {

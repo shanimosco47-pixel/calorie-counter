@@ -99,6 +99,8 @@ test('defaultAmount picks the natural household measure', () => {
   // egg dishes default to two eggs; borrowed units work like their originals
   assert.deepEqual(defaultAmount(f([['egg', 37, 'ביצה'], ['801', 48]])), { amount: 2, unit: 'egg' });
   assert.deepEqual(defaultAmount(f([['b502', 23, '≈ פרוסה'], ['b900', 600]])), { amount: 1, unit: 'b502' });
-  // nothing sensible: fall back to grams
+  // nothing sensible: fall back to grams (a 30 g handful for calorie-dense food)
   assert.deepEqual(defaultAmount(f([['900', 750]])), { amount: 100, unit: 'g' });
+  assert.deepEqual(defaultAmount(f([['100', 5.5], ['200', 120]], 654)), { amount: 30, unit: 'g' });   // walnuts
+  assert.deepEqual(defaultAmount(f([['500', 2.5]], 107)), { amount: 100, unit: 'g' });                 // 2.5 g ham slice
 });

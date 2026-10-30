@@ -48,7 +48,9 @@ NO_BORROW = ("תמ\"ל", "תמ\"י", "תוסף", "תחליף", "מטרנה")   #
 
 
 def state(name):
-    return {w for w in STATE_WORDS if w in name}
+    found = {"לא מבושל"} if "לא מבושל" in name else set()
+    rest = name.replace("לא מבושל", "")
+    return found | {w for w in STATE_WORDS if w in rest}
 
 
 def words(name):
@@ -69,13 +71,17 @@ def borrowed_measures(foods, measures, units):
             continue
         name = " ".join(f["shmmitzrach"].split())
         mine = words(name)
-        if not mine or "לא מבושל" in name or any(w in name for w in NO_BORROW):
-            continue                                 # raw meat is weighed; formula is not guessed
+        if not mine or "לא מבושל" in name or any(w in name for w in NO_BORROW) or num(f["psolet"]) > 0:
+            continue                                 # raw meat is weighed; formula is not guessed;
+                                                     # "with stalk/peel" weights include inedible waste
         best, best_score = None, 0.0
         for g in by_group.get(f["smlmitzrach"][:3], []):
             their_name = " ".join(g["shmmitzrach"].split())
             theirs = words(their_name)
             if theirs[0] != mine[0] or state(their_name) != state(name):
+                continue
+            ek, mk = num(g["food_energy"]), num(f["food_energy"])
+            if min(ek, mk) <= 0 or max(ek, mk) / min(ek, mk) > 1.6:   # dry vs cooked, etc.
                 continue
             score = len(set(mine) & set(theirs)) / len(set(mine) | set(theirs))
             if score > best_score:
@@ -110,10 +116,9 @@ def egg_units(raw, foods):
             ing = by_code.get(r["mitzbsisi"])
             if not ing:
                 continue
-            grams = num(r["mishkal"])
-            if r["ahuz"]:                       # frying oil: only this percentage is absorbed
-                grams = grams * num(r["ahuz"]) / 100
-            kcal += grams * num(ing["food_energy"]) / 100
+            # full recipe weight: a fat/solids mass balance against the dish shows the frying oil
+            # is absorbed ("ahuz" is a share of the finished dish, not of the oil)
+            kcal += num(r["mishkal"]) * num(ing["food_energy"]) / 100
         eggs = egg_g / EGG_GRAMS
         grams_per_egg = round((kcal / eggs) / (dish_kcal / 100), 1)
         if grams_per_egg > 0:

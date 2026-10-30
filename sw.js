@@ -1,5 +1,5 @@
 // Offline support: app shell and food data are cached; Open Food Facts and Supabase requests always go to the network.
-const VERSION = 'kalorit-app-v1.7.0';
+const VERSION = 'kalorit-app-v1.7.1';
 const SHELL = [
   './',
   'index.html',
@@ -22,7 +22,7 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {

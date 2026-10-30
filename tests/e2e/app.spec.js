@@ -258,9 +258,27 @@ test('egg dishes are measured in eggs', async ({ page }) => {
   await expect(page.getByTestId('unit')).toHaveValue('egg');
   await expect(page.getByTestId('unit').locator('option:checked')).toContainText('ביצה');
   await expect(page.getByTestId('amount')).toHaveValue('2');
-  await expect(page.getByTestId('confirm-total')).toHaveText('144');      // 2 x 37 g x 194 kcal/100 g
+  await expect(page.getByTestId('confirm-total')).toHaveText('178');      // 2 x 46 g x 194 kcal/100 g
   await page.getByTestId('amount').fill('3');
-  await expect(page.getByTestId('confirm-total')).toHaveText('215');
+  await expect(page.getByTestId('confirm-total')).toHaveText('268');
   await page.getByTestId('confirm-save').click();
   await expect(page.getByTestId('entry')).toContainText('3 × ביצה');
+});
+
+test('editing an entry whose unit this device does not know keeps its grams', async ({ page }) => {
+  await open(page);
+  // an entry synced from a newer version, in a unit missing from this food's data
+  await page.evaluate(async () => {
+    const { put } = await import('./lib/db.js');
+    const { isoDate } = await import('./lib/calc.js');
+    await put('entries', { id: 'efuture', date: isoDate(), meal: 'lunch', foodId: 't1561', name: 'ביצה שלמה בלי קליפה',
+      amount: 3, unit: 'futureunit', grams: 111, kcal: 159, p: 14, c: 1, f: 11, ts: Date.now() });
+  });
+  await page.reload();
+  await expect(page.locator('body')).toHaveAttribute('data-ready', '1');
+  await page.locator('[data-edit="efuture"]').click();
+  await expect(page.getByTestId('unit')).toHaveValue('g');
+  await expect(page.getByTestId('amount')).toHaveValue('111');
+  await page.getByTestId('confirm-save').click();
+  await expect(page.getByTestId('eaten')).toHaveText('159');
 });

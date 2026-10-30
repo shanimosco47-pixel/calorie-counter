@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { normalize, buildIndex, matchFood } from '../../lib/match.js';
+import { normalize, buildIndex, matchFood, STAPLES } from '../../lib/match.js';
 
 const data = JSON.parse(readFileSync(new URL('../../data/tzameret.json', import.meta.url)));
 const index = buildIndex(data.foods);
@@ -52,7 +52,9 @@ for (const [q, re] of Object.entries(CASES)) {
 
 test('egg dishes have an egg unit; breads and soups do not', () => {
   const egg = (name) => data.foods.find((f) => f.n === name).m.find((m) => m[0] === 'egg');
-  assert.deepEqual(egg('ביצה או חביתה מטוגנת בשמן זית'), ['egg', 37, 'ביצה']);
+  assert.deepEqual(egg('ביצה או חביתה מטוגנת בשמן זית'), ['egg', 46, 'ביצה']);
+  // frying in oil cannot make the dish lighter per egg than frying without oil
+  assert.ok(egg('ביצה או חביתה מטוגנת בשמן זית')[1] > egg('ביצה או חביתה מטוגנת ללא שמן')[1]);
   assert.equal(egg('שקשוקה בשמן זית')[2], 'ביצה (עם הרוטב)');
   assert.equal(data.foods.filter((f) => /^(לחם|חלה|מרק|מוס)/.test(f.n) && f.m.some((m) => m[0] === 'egg')).length, 0);
 });
@@ -71,13 +73,15 @@ test('plain names find the everyday staple first', () => {
   assert.match(first('קפה הפוך'), /קפוצ'ינו/);
 });
 
-test('every staple exists in the data', async () => {
-  const src = (await import('node:fs')).readFileSync(new URL('../../lib/match.js', import.meta.url), 'utf8');
-  const block = src.slice(src.indexOf('const STAPLES'), src.indexOf(']);', src.indexOf('const STAPLES')));
-  const names = [...block.matchAll(/'([^']+)'|"([^"]+)"/g)].map((m) => m[1] || m[2]);
+test('every staple exists in the data', () => {
   const all = new Set(data.foods.map((f) => f.n));
-  assert.ok(names.length >= 20);
-  for (const n of names) assert.ok(all.has(n), `missing staple: ${n}`);
+  for (const names of Object.values(STAPLES)) for (const n of names) assert.ok(all.has(n), `missing staple: ${n}`);
+});
+
+test('staples do not take over generic queries', () => {
+  const first = (q) => matchFood(q, index, { limit: 1 })[0].n;
+  assert.doesNotMatch(first('בשר'), /^בשר עוף, חזה/);
+  assert.doesNotMatch(first('סלט'), /^סלט חומוס, ביתי/);
 });
 
 test('rare forms (dried, powder) only when asked for', () => {
