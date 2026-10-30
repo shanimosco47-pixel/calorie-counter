@@ -13,6 +13,7 @@ const SHELL = [
   'lib/remote.js',
   'lib/match.js',
   'lib/off.js',
+  'lib/update.js',
   'vendor/dexie.min.js',
   'vendor/chart.umd.js',
   'vendor/html5-qrcode.min.js',

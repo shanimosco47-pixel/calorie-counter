@@ -8,6 +8,7 @@ import {
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
 import { BUILD } from './build-info.js';
+import { createUpdater } from './lib/update.js';
 
 export const APP_VERSION = '1.8.0';
 
@@ -91,8 +92,9 @@ function toast(text, undo) {
 }
 
 // ---------- updates ----------
-// Every deploy writes build-info.js (baked into this copy) and version.json (always fetched fresh).
-// When they differ, a newer version is on the server: let the service worker take it, then reload.
+// Every deploy writes build-info.js (baked into this copy) and version.json (fetched fresh).
+// lib/update.js installs a newer build and reloads only when it is really installed and the
+// user is not in the middle of something; otherwise it waits until the app goes to background.
 
 function builtText(iso) {
   if (!iso) return 'גרסת פיתוח';
@@ -101,51 +103,31 @@ function builtText(iso) {
     + ' ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
 }
 
-async function latestBuild() {
-  try {
-    const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
-    return res.ok ? await res.json() : null;
-  } catch { return null; }   // offline: keep running this version
-}
+let localStore = null;
+try { localStore = window.localStorage; } catch { /* storage blocked */ }
 
-function swActivated(reg) {
-  // resolves when a new service worker takes control (it calls skipWaiting + clients.claim)
-  return new Promise((resolve) => {
-    if (!navigator.serviceWorker) return resolve();
-    const done = () => resolve();
-    navigator.serviceWorker.addEventListener('controllerchange', done, { once: true });
-    setTimeout(done, 8000);
-    reg?.update().catch(() => {});
-  });
-}
-
-let updating = false;
-async function checkForUpdate({ manual = false } = {}) {
-  if (updating) return;
-  const latest = await latestBuild();
-  if (!latest || !latest.commit || latest.commit === BUILD.commit) {
-    if (manual) toast(latest ? `האפליקציה מעודכנת ✓ (${builtText(BUILD.builtAt)})` : 'אין חיבור לשרת, נסו שוב מאוחר יותר');
-    return;
-  }
-  // guard against a reload loop while GitHub Pages is still propagating the new files
-  let tried = null;
-  try { tried = sessionStorage.getItem('kalorit-update-tried'); } catch { /* storage blocked */ }
-  if (tried === latest.commit && !manual) return;
-  try { sessionStorage.setItem('kalorit-update-tried', latest.commit); } catch { /* storage blocked */ }
-  try { sessionStorage.setItem('kalorit-updated-to', latest.builtAt || ''); } catch { /* storage blocked */ }
-
-  updating = true;
-  toast('מעדכן לגרסה חדשה…');
-  const reg = await navigator.serviceWorker?.getRegistration();
-  await swActivated(reg);
-  location.reload();
-}
-
-function announceUpdate() {
-  let to = null;
-  try { to = sessionStorage.getItem('kalorit-updated-to'); sessionStorage.removeItem('kalorit-updated-to'); } catch { /* storage blocked */ }
-  if (to !== null && BUILD.builtAt) toast(`האפליקציה עודכנה ✓ ${builtText(BUILD.builtAt)}`);
-}
+const updater = createUpdater({
+  build: BUILD,
+  fetchLatest: async () => {
+    try {
+      const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+      return res.ok ? await res.json() : null;
+    } catch { return null; }
+  },
+  serviceWorker: 'serviceWorker' in navigator && location.protocol !== 'file:' ? navigator.serviceWorker : null,
+  cacheExists: async (version) => { try { return await caches.has(`kalorit-app-${version}`); } catch { return false; } },
+  isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
+    || (state.view === 'add' && $('#search').value.trim() !== ''),
+  reload: () => location.reload(),
+  notify: (event, info) => {
+    if (event === 'updated') toast(`האפליקציה עודכנה ✓ ${builtText(info.builtAt)}`);
+    else if (event === 'current') toast(`האפליקציה מעודכנת ✓ (${builtText(info.builtAt)})`);
+    else if (event === 'offline') toast('אין חיבור לשרת, נסו שוב מאוחר יותר');
+    else if (event === 'updating') toast('מוריד גרסה חדשה…');
+    else if (event === 'failed') toast('העדכון עדיין לא זמין בשרת, ננסה שוב בעוד כמה דקות');
+  },
+  storage: localStore,
+});
 
 // ---------- install ----------
 // Chrome's own "Add to Home screen" sheet can wrongly report the app as installed when other
@@ -800,7 +782,7 @@ function bind() {
   $('#export-btn').onclick = exportBackup;
   $('#import-input').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#install-btn').onclick = installApp;
-  $('#check-update').onclick = () => checkForUpdate({ manual: true });
+  $('#check-update').onclick = () => updater.check({ manual: true });
   $('#sync-create').onclick = () => connectSync(sync.generateCode());
   $('#sync-join-open').onclick = () => { $('#sync-join-form').hidden = false; $('#sync-join-code').focus(); };
   $('#sync-join-form').onsubmit = async (e) => {
@@ -824,25 +806,30 @@ function bind() {
 
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible') return;
+    if (document.visibilityState !== 'visible') { updater.onHidden(); return; }
     if (state.view === 'today') renderToday();
     sync.syncNow();
-    checkForUpdate();
+    updater.check();
   });
 }
 
 async function start() {
+  // the update path runs first and on its own: if anything below breaks after a partial
+  // deploy, the app can still fetch the version that fixes it
+  try {
+    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
+    }
+    updater.announce();
+    updater.check();
+  } catch { /* never block startup */ }
+
   bind();
   await Promise.all([loadFoods(), loadTarget()]);
   document.body.dataset.ready = '1';
   show('today');
   renderSyncStatus();
   sync.syncNow();
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
-  }
-  announceUpdate();
-  checkForUpdate();
 }
 
 start();
