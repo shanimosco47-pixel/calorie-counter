@@ -8,7 +8,7 @@ import {
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.2.1';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
