@@ -15,7 +15,7 @@ test('manifest is valid for installation', async ({ request }) => {
   expect(m.dir).toBe('rtl');
   expect(m.lang).toBe('he');
   expect(m.display).toBe('standalone');
-  expect(m.id).toBe('kalorit-app');
+  expect(m.id).toBe('./');
   expect(m.start_url).toBe('./?source=pwa');
   expect(m.scope).toBe('./');
   const sizes = m.icons.map((i) => i.sizes);
