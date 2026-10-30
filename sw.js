@@ -1,5 +1,5 @@
 // Offline support: app shell and food data are cached; Open Food Facts and Supabase requests always go to the network.
-const VERSION = 'kalorit-v1.2.1';
+const VERSION = 'kalorit-v1.3.0';
 const SHELL = [
   './',
   'index.html',
@@ -33,16 +33,40 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Pages and the manifest: network first, so an update reaches the phone on the very next open.
+// Everything else (code, food data, icons): cache first, refreshed in the background.
+const NETWORK_FIRST = (req, url) => req.mode === 'navigate' || url.pathname.endsWith('.webmanifest') || url.pathname.endsWith('/sw.js');
+
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  // cache first, then refresh the cache in the background
+
+  if (NETWORK_FIRST(event.request, url)) {
+    event.respondWith(
+      fetch(event.request, { cache: 'no-cache' })
+        .then(async (res) => {
+          if (res.ok) {
+            const cache = await caches.open(VERSION);
+            await cache.put(event.request.mode === 'navigate' ? 'index.html' : event.request, res.clone());
+          }
+          return res;
+        })
+        .catch(async () => {
+          const cache = await caches.open(VERSION);
+          return (await cache.match(event.request, { ignoreSearch: true }))
+            || (await cache.match('index.html'))
+            || Response.error();
+        }),
+    );
+    return;
+  }
+
   event.respondWith(
     caches.open(VERSION).then(async (cache) => {
       const cached = await cache.match(event.request, { ignoreSearch: true });
       const network = fetch(event.request)
         .then((res) => { if (res.ok) cache.put(event.request, res.clone()); return res; })
-        .catch(() => cached);
+        .catch(() => cached || Response.error());
       return cached || network;
     }),
   );
