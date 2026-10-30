@@ -233,3 +233,18 @@ test('past days: navigate back and log to yesterday', async ({ page }) => {
   await page.getByTestId('date-label').click();   // back to today
   await expect(page.getByTestId('entry')).toHaveCount(0);
 });
+
+test('install button appears when Chrome allows installing and starts the install', async ({ page }) => {
+  await open(page);
+  await expect(page.getByTestId('install-card')).toBeHidden();
+  await page.evaluate(() => {
+    const e = new Event('beforeinstallprompt', { cancelable: true });
+    e.prompt = async () => { window.__prompted = true; };
+    e.userChoice = Promise.resolve({ outcome: 'accepted' });
+    window.dispatchEvent(e);
+  });
+  await expect(page.getByTestId('install-card')).toBeVisible();
+  await page.getByTestId('install-btn').click();
+  expect(await page.evaluate(() => window.__prompted)).toBe(true);
+  await expect(page.getByTestId('install-card')).toBeHidden();
+});

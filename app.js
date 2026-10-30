@@ -8,7 +8,7 @@ import {
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
 
-export const APP_VERSION = '1.4.0';
+export const APP_VERSION = '1.5.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -92,6 +92,36 @@ function toast(text, undo) {
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
+}
+
+// ---------- install ----------
+// Chrome's own "Add to Home screen" sheet can wrongly report the app as installed when other
+// apps from the same github.io origin are installed. beforeinstallprompt goes straight to the
+// real install flow, so the app offers its own button whenever Chrome allows installing.
+
+let installPrompt = null;
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  $('#install-card').hidden = isStandalone();
+});
+
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  $('#install-card').hidden = true;
+  toast('קלורית הותקנה ✓ האייקון יופיע במסך הבית');
+});
+
+async function installApp() {
+  if (!installPrompt) return;
+  const prompt = installPrompt;
+  installPrompt = null;
+  await prompt.prompt();
+  const { outcome } = await prompt.userChoice;
+  if (outcome !== 'accepted') installPrompt = prompt;   // allow another try
+  $('#install-card').hidden = outcome === 'accepted';
 }
 
 // ---------- cloud sync ----------
@@ -709,6 +739,7 @@ function bind() {
   $('#target-form').onsubmit = saveTarget;
   $('#export-btn').onclick = exportBackup;
   $('#import-input').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
+  $('#install-btn').onclick = installApp;
   $('#sync-create').onclick = () => connectSync(sync.generateCode());
   $('#sync-join-open').onclick = () => { $('#sync-join-form').hidden = false; $('#sync-join-code').focus(); };
   $('#sync-join-form').onsubmit = async (e) => {

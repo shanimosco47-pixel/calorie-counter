@@ -160,6 +160,11 @@ input:focus, select:focus { outline: 2px solid var(--brand); outline-offset: -1p
 .inline-form { display: flex; gap: 8px; margin: 8px 0; }
 .inline-form input { flex: 1; }
 .calc-result { background: var(--brand-soft); border-radius: 12px; padding: 10px 12px; margin: 12px 0 0; }
+/* install */
+.install-card { display: flex; align-items: center; gap: 12px; border-color: var(--brand); }
+.install-card .grow { flex: 1; min-width: 0; }
+.install-card .muted { display: block; margin: 2px 0 0; }
+
 /* sync */
 .code-box {
   display: block; margin-top: 6px; padding: 12px; border-radius: 12px; background: var(--surface-2);
