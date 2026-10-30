@@ -26,9 +26,7 @@ jobs:
         run: npm test
       - name: Publish to gh-pages
         run: |
-          mkdir _site
-          cp -r index.html app.js styles.css sw.js kalorit.webmanifest lib vendor data icons _site/
-          touch _site/.nojekyll
+          scripts/build_site.sh _site
           cd _site
           git init -q -b gh-pages
           git config user.name "github-actions[bot]"
