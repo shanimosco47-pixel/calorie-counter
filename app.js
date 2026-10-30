@@ -7,8 +7,9 @@ import {
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
+import { BUILD } from './build-info.js';
 
-export const APP_VERSION = '1.7.1';
+export const APP_VERSION = '1.8.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -87,6 +88,63 @@ function toast(text, undo) {
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
+}
+
+// ---------- updates ----------
+// Every deploy writes build-info.js (baked into this copy) and version.json (always fetched fresh).
+// When they differ, a newer version is on the server: let the service worker take it, then reload.
+
+function builtText(iso) {
+  if (!iso) return 'גרסת פיתוח';
+  const d = new Date(iso);
+  return d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric', year: 'numeric' })
+    + ' ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+}
+
+async function latestBuild() {
+  try {
+    const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }   // offline: keep running this version
+}
+
+function swActivated(reg) {
+  // resolves when a new service worker takes control (it calls skipWaiting + clients.claim)
+  return new Promise((resolve) => {
+    if (!navigator.serviceWorker) return resolve();
+    const done = () => resolve();
+    navigator.serviceWorker.addEventListener('controllerchange', done, { once: true });
+    setTimeout(done, 8000);
+    reg?.update().catch(() => {});
+  });
+}
+
+let updating = false;
+async function checkForUpdate({ manual = false } = {}) {
+  if (updating) return;
+  const latest = await latestBuild();
+  if (!latest || !latest.commit || latest.commit === BUILD.commit) {
+    if (manual) toast(latest ? `האפליקציה מעודכנת ✓ (${builtText(BUILD.builtAt)})` : 'אין חיבור לשרת, נסו שוב מאוחר יותר');
+    return;
+  }
+  // guard against a reload loop while GitHub Pages is still propagating the new files
+  let tried = null;
+  try { tried = sessionStorage.getItem('kalorit-update-tried'); } catch { /* storage blocked */ }
+  if (tried === latest.commit && !manual) return;
+  try { sessionStorage.setItem('kalorit-update-tried', latest.commit); } catch { /* storage blocked */ }
+  try { sessionStorage.setItem('kalorit-updated-to', latest.builtAt || ''); } catch { /* storage blocked */ }
+
+  updating = true;
+  toast('מעדכן לגרסה חדשה…');
+  const reg = await navigator.serviceWorker?.getRegistration();
+  await swActivated(reg);
+  location.reload();
+}
+
+function announceUpdate() {
+  let to = null;
+  try { to = sessionStorage.getItem('kalorit-updated-to'); sessionStorage.removeItem('kalorit-updated-to'); } catch { /* storage blocked */ }
+  if (to !== null && BUILD.builtAt) toast(`האפליקציה עודכנה ✓ ${builtText(BUILD.builtAt)}`);
 }
 
 // ---------- install ----------
@@ -585,6 +643,7 @@ async function renderSettings() {
   $('#manual-target').value = (await getSetting('manualTarget', null)) || state.target;
   $('#api-key').value = (await getSetting('apiKey', '')) || '';
   $('#app-version').textContent = APP_VERSION;
+  $('#app-built').textContent = builtText(BUILD.builtAt);
   renderSyncStatus();
   setTargetMode(mode);
   updateCalcPreview();
@@ -741,6 +800,7 @@ function bind() {
   $('#export-btn').onclick = exportBackup;
   $('#import-input').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#install-btn').onclick = installApp;
+  $('#check-update').onclick = () => checkForUpdate({ manual: true });
   $('#sync-create').onclick = () => connectSync(sync.generateCode());
   $('#sync-join-open').onclick = () => { $('#sync-join-form').hidden = false; $('#sync-join-code').focus(); };
   $('#sync-join-form').onsubmit = async (e) => {
@@ -767,6 +827,7 @@ function bind() {
     if (document.visibilityState !== 'visible') return;
     if (state.view === 'today') renderToday();
     sync.syncNow();
+    checkForUpdate();
   });
 }
 
@@ -780,6 +841,8 @@ async function start() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   }
+  announceUpdate();
+  checkForUpdate();
 }
 
 start();

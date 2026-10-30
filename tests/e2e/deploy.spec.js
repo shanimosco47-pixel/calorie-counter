@@ -80,3 +80,78 @@ test('upgrade from the old layout keeps data, retires the old worker, and the li
     srv.stop();
   }
 });
+
+test('opening the app after a deploy updates it automatically and shows the update time', async ({ page }, info) => {
+  const build = (name, commit, time) => {
+    const dir = info.outputPath(name);
+    execFileSync('scripts/build_site.sh', [dir], { env: { ...process.env, BUILD_COMMIT: commit, BUILD_TIME: time } });
+    return dir;
+  };
+  const a = build('a', 'aaa1111', '2026-10-30T08:00:00Z');
+  const b = build('b', 'bbb2222', '2026-10-30T20:15:00Z');
+  const shown = (iso) => page.evaluate((t) => {
+    const d = new Date(t);
+    return d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric', year: 'numeric' })
+      + ' ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+  }, iso);
+
+  const srv = pagesServer();
+  const base = await srv.start();
+  try {
+    // version A is installed and has data
+    srv.serve(a);
+    await page.goto(base + 'app/');
+    await expect(page.locator('body')).toHaveAttribute('data-ready', '1');
+    await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+    await page.getByTestId('nav-add').click();
+    await page.getByTestId('search').fill('פיתה');
+    await page.getByTestId('result').first().click();
+    await page.getByTestId('confirm-save').click();
+    await page.getByTestId('nav-settings').click();
+    await expect(page.getByTestId('app-built')).toHaveText(await shown('2026-10-30T08:00:00Z'));
+    await page.getByTestId('check-update').click();
+    await expect(page.locator('#toast-text')).toContainText('מעודכנת');
+
+    // version B is deployed; the user opens the app again
+    srv.serve(b);
+    await page.goto(base + 'app/');
+    await expect(page.locator('#toast-text')).toContainText('עודכנה', { timeout: 15000 });
+    expect(await page.evaluate(async () => (await import('./build-info.js')).BUILD.commit)).toBe('bbb2222');
+    await page.getByTestId('nav-settings').click();
+    await expect(page.getByTestId('app-built')).toHaveText(await shown('2026-10-30T20:15:00Z'));
+    await page.getByTestId('nav-today').click();
+    await expect(page.getByTestId('entry')).toHaveCount(1);                 // data kept
+
+    // opening again: already current, no further reload
+    let reloads = 0;
+    page.on('framenavigated', (f) => { if (f === page.mainFrame()) reloads++; });
+    await page.goto(base + 'app/');
+    await expect(page.locator('body')).toHaveAttribute('data-ready', '1');
+    await page.waitForTimeout(1500);
+    expect(reloads).toBe(1);
+  } finally {
+    srv.stop();
+  }
+});
+
+test('offline: the app opens and does not try to update', async ({ page, context }, info) => {
+  const dir = info.outputPath('site');
+  execFileSync('scripts/build_site.sh', [dir], { env: { ...process.env, BUILD_COMMIT: 'ccc3333', BUILD_TIME: '2026-10-30T09:00:00Z' } });
+  const srv = pagesServer();
+  const base = await srv.start();
+  try {
+    srv.serve(dir);
+    await page.goto(base + 'app/');
+    await expect(page.locator('body')).toHaveAttribute('data-ready', '1');
+    await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+    await expect.poll(() => page.evaluate(async () => (await caches.keys()).includes('kalorit-app-ccc3333'))).toBe(true);
+    await context.setOffline(true);
+    await page.reload();
+    await expect(page.locator('body')).toHaveAttribute('data-ready', '1');
+    await page.getByTestId('nav-settings').click();
+    await page.getByTestId('check-update').click();
+    await expect(page.locator('#toast-text')).toContainText('אין חיבור');
+  } finally {
+    srv.stop();
+  }
+});

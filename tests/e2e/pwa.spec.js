@@ -57,7 +57,7 @@ test('an updated page and manifest reach the phone on the next open', async ({ p
   // serve a private copy of the site so the test can change files on disk, like a real deploy
   const root = info.outputPath('site');
   fs.mkdirSync(root, { recursive: true });
-  for (const f of ['index.html', 'app.js', 'styles.css', 'sw.js', 'kalorit.webmanifest', 'lib', 'vendor', 'data', 'icons']) {
+  for (const f of ['index.html', 'app.js', 'styles.css', 'sw.js', 'kalorit.webmanifest', 'build-info.js', 'version.json', 'lib', 'vendor', 'data', 'icons']) {
     fs.cpSync(f, path.join(root, f), { recursive: true });
   }
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
