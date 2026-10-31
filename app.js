@@ -120,7 +120,7 @@ const updater = createUpdater({
   isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
     || (state.view === 'add' && $('#search').value.trim() !== ''),
   // the camera or picker is open over the app, a paid recognition is running, or its items await approval
-  keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming,
+  keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming || !!photo.stream,
   reload: () => location.reload(),
   notify: (event, info) => {
     if (event === 'updated') toast(`האפליקציה עודכנה ✓ ${builtText(info.builtAt)}`);
@@ -464,39 +464,107 @@ window.confirmItems = confirmItems;   // used by tests
 
 // ---------- meal photo ----------
 
-// Downscales the photo before upload: Claude reads food fine at ~1.5 MP, and phone photos are 10+ MB.
-async function photoToJpeg(file, maxSide = 1568) {
-  let bmp;
-  try { bmp = await createImageBitmap(file); }
-  catch (e) { throw new VisionError('bad_image', String(e?.message || e)); }   // HEIC, or too large for memory
-  const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+// Downscales before upload: Claude reads food fine at ~1.5 MP, and phone photos are 10+ MB.
+// Photos live only in memory (canvas, data URL); nothing is written to storage or the gallery.
+function toJpeg(source, width, height, maxSide = 1568) {
+  const scale = Math.min(1, maxSide / Math.max(width, height));
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(bmp.width * scale));
-  canvas.height = Math.max(1, Math.round(bmp.height * scale));
-  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-  bmp.close?.();
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
   const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  canvas.width = canvas.height = 0;   // free the pixels now
   return { dataUrl, base64: dataUrl.slice(dataUrl.indexOf(',') + 1) };
 }
 
-// picking: camera/picker open; ctrl: request in flight; confirming: recognized items awaiting approval
-const photo = { file: null, ctrl: null, picking: false, confirming: false };
+async function photoToJpeg(file) {
+  let bmp;
+  try { bmp = await createImageBitmap(file); }
+  catch (e) { throw new VisionError('bad_image', String(e?.message || e)); }   // HEIC, or too large for memory
+  const img = toJpeg(bmp, bmp.width, bmp.height);
+  bmp.close?.();
+  return img;
+}
 
-async function analyzeMeal(file) {
+// picking: picker or camera app open; ctrl: request in flight; confirming: recognized items awaiting
+// approval; stream: the in-app camera; source: the current photo, kept in memory only for "try again"
+const photo = { source: null, ctrl: null, picking: false, confirming: false, stream: null };
+
+function stopCamera() {
+  photo.stream?.getTracks().forEach((t) => t.stop());
+  photo.stream = null;
+  const video = $('#camera');
+  video.srcObject = null;
+  video.hidden = true;
+  $('#shutter').hidden = true;
+}
+
+// In-app camera: the photo goes from the camera straight into memory, never through the camera
+// app or the gallery. Falls back to the phone's camera app when the browser gives no camera access.
+async function openCamera() {
   const sheet = $('#photo-sheet');
-  const status = $('#photo-status');
-  photo.file = file;
-  photo.ctrl?.abort();
-  const ctrl = photo.ctrl = new AbortController();
+  resetPhotoSheet();
+  $('#photo-status').textContent = 'מפעיל מצלמה…';
+  if (!sheet.open) sheet.showModal();
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('no camera API');
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+    });
+    if (!sheet.open) { stream.getTracks().forEach((t) => t.stop()); return; }   // closed meanwhile
+    photo.stream = stream;
+    const video = $('#camera');
+    video.srcObject = stream;
+    video.hidden = false;
+    await video.play().catch(() => {});
+    $('#shutter').hidden = false;
+    $('#photo-status').textContent = 'כוונו למנה ולחצו "צלם"';
+  } catch (e) {
+    stopCamera();
+    $('#photo-status').textContent = 'אין גישה למצלמה מתוך האפליקציה. אפשר לצלם באפליקציית המצלמה, או לאשר הרשאת מצלמה בהגדרות הדפדפן.';
+    $('#photo-actions').hidden = false;
+    $('#photo-retry').hidden = true;
+    $('#camera-app').hidden = false;
+  }
+}
+
+function takePicture() {
+  const video = $('#camera');
+  if (!photo.stream || !video.videoWidth) return;   // not streaming yet
+  const img = toJpeg(video, video.videoWidth, video.videoHeight);
+  stopCamera();
+  analyzeMeal(img);
+}
+
+function resetPhotoSheet() {
   $('#photo-actions').hidden = true;
   $('#photo-settings').hidden = true;
+  $('#camera-app').hidden = true;
   $('#photo-detail').hidden = true;
+  $('#photo-preview').removeAttribute('src');
+}
+
+function forgetPhoto() {
+  photo.source = null;
+  $('#photo-preview').removeAttribute('src');
+}
+
+// source: a File (gallery / camera app) or an image already in memory ({ dataUrl, base64 })
+async function analyzeMeal(source) {
+  const sheet = $('#photo-sheet');
+  const status = $('#photo-status');
+  photo.source = source;
+  photo.ctrl?.abort();
+  const ctrl = photo.ctrl = new AbortController();
+  resetPhotoSheet();
   status.textContent = 'מזהה את המנה…';
   if (!sheet.open) sheet.showModal();
   try {
     const apiKey = await getSetting('apiKey', '');
     if (!apiKey) throw new VisionError('no_key', 'no key');
-    const img = await photoToJpeg(file);
+    const img = source instanceof Blob ? await photoToJpeg(source) : source;
+    photo.source = img;   // retry reuses the small copy; the original file is released
     if (ctrl.signal.aborted) return;
     $('#photo-preview').src = img.dataUrl;
     const recognized = await analyzePhoto({ apiKey, imageBase64: img.base64, mediaType: 'image/jpeg', signal: ctrl.signal });
@@ -511,6 +579,7 @@ async function analyzeMeal(file) {
     });
     photo.ctrl = null;
     sheet.close();
+    forgetPhoto();
     photo.confirming = true;
     confirmItems(items).finally(() => { photo.confirming = false; });
   } catch (e) {
@@ -531,8 +600,9 @@ async function analyzeMeal(file) {
 function closePhoto() {
   photo.ctrl?.abort();
   photo.ctrl = null;
+  stopCamera();
   $('#photo-sheet').close();
-  $('#photo-preview').removeAttribute('src');
+  forgetPhoto();
 }
 
 // ---------- barcode ----------
@@ -821,12 +891,16 @@ function bind() {
     if (food) confirmItems([{ food }]);
   });
 
-  $('#photo-input').onclick = () => { photo.picking = true; };
-  $('#photo-input').addEventListener('cancel', () => { photo.picking = false; });
-  $('#photo-input').onchange = (e) => { photo.picking = false; const f = e.target.files[0]; e.target.value = ''; if (f) analyzeMeal(f); };
+  $('#open-camera').onclick = openCamera;
+  $('#shutter').onclick = takePicture;
+  for (const input of [$('#photo-input'), $('#camera-input')]) {
+    input.onclick = () => { photo.picking = true; };
+    input.addEventListener('cancel', () => { photo.picking = false; });
+    input.onchange = (e) => { photo.picking = false; const f = e.target.files[0]; e.target.value = ''; if (f) analyzeMeal(f); };
+  }
   $('#photo-close').onclick = closePhoto;
   $('#photo-sheet').addEventListener('cancel', (e) => { e.preventDefault(); closePhoto(); });
-  $('#photo-retry').onclick = () => { if (photo.file) analyzeMeal(photo.file); };
+  $('#photo-retry').onclick = () => { if (photo.source) analyzeMeal(photo.source); };
   $('#photo-settings').onclick = () => { closePhoto(); show('settings'); $('#experimental').open = true; $('#api-key').focus(); };
   $('#open-scan').onclick = openScanner;
   $('#scan-close').onclick = closeScanner;
@@ -894,6 +968,8 @@ function bind() {
     if (document.visibilityState !== 'visible') { updater.onHidden(); return; }
     // back from the camera or picker: the change event (if any) fires right after this
     if (photo.picking) setTimeout(() => { photo.picking = false; }, 3000);
+    // the system may stop the camera while the app is in the background: start it again
+    if (photo.stream && photo.stream.getVideoTracks().every((t) => t.readyState === 'ended')) openCamera();
     if (state.view === 'today') renderToday();
     sync.syncNow();
     updater.check();
