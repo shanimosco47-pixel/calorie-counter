@@ -37,7 +37,12 @@ test('pickFood: skips implausible candidates, falls back to the estimate', () =>
   const est = pickFood(it, [powder], { makeId: () => 'aX' });
   assert.equal(est.estimated, true);
   assert.deepEqual(est.food, { id: 'aX', n: 'אורז לבן', kcal: 130, p: 2.7, c: 28, f: 0.3, m: [], src: 'ai' });
-  assert.equal(pickFood({ ...it, kcal: 0 }, [powder]).food.id, 't1');   // no estimate: trust search
+  // 0 kcal (diet cola, water) is an estimate too: regular cola is not a match
+  const water = { ...it, name: 'מים', kcal: 0, p: 0, c: 0, f: 0 };
+  assert.equal(pickFood(water, [{ id: 't3', n: 'משקה קולה', kcal: 42 }]).estimated, true);
+  assert.equal(pickFood(water, [{ id: 't4', n: 'מים', kcal: 0 }]).food.id, 't4');
+  // an earlier photo estimate is never reused as a database match
+  assert.equal(pickFood(it, [{ id: 'a1', n: 'אורז לבן', kcal: 130, src: 'ai' }], { makeId: () => 'aY' }).food.id, 'aY');
 });
 
 test('analyzePhoto: headers, key handling and HTTP errors', async () => {
@@ -54,5 +59,9 @@ test('analyzePhoto: headers, key handling and HTTP errors', async () => {
   for (const [s, code] of [[401, 'auth'], [429, 'rate_limit'], [529, 'overloaded'], [400, 'api']]) {
     await assert.rejects(analyzePhoto({ apiKey: 'k', imageBase64: 'x', fetchImpl: status(s) }), (e) => e.code === code);
   }
+  const noCredit = async () => new Response(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error',
+    message: 'Your credit balance is too low to access the Anthropic API.' } }), { status: 400 });
+  await assert.rejects(analyzePhoto({ apiKey: 'k', imageBase64: 'x', fetchImpl: noCredit }),
+    (e) => e.code === 'credit' && e.detail.includes('credit balance'));
   await assert.rejects(analyzePhoto({ apiKey: 'k', imageBase64: 'x', fetchImpl: async () => { throw new TypeError('Failed to fetch'); } }), (e) => e.code === 'network');
 });

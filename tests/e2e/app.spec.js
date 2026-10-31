@@ -267,6 +267,28 @@ test('meal photo: without a key, explains and links to settings; a bad key says 
   await page.getByTestId('photo-input').setInputFiles(photoFile);
   await expect(page.getByTestId('photo-status')).toContainText('המפתח לא התקבל');
   await expect(page.getByTestId('photo-retry')).toBeHidden();
+});
+
+test('meal photo: rejected request shows the reason; unreadable image says so', async ({ page }) => {
+  let reply = { status: 400, json: { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } } };
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill(reply));
+  await open(page);
+  await saveApiKey(page, 'sk-ant-test');
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('photo-input').setInputFiles(photoFile);
+  await expect(page.getByTestId('photo-status')).toContainText('אין יתרה');
+  await expect(page.getByTestId('photo-detail')).toContainText('credit balance is too low');
+  await expect(page.getByTestId('photo-retry')).toBeHidden();
+  await page.locator('#photo-close').click();
+
+  reply = { status: 400, json: { type: 'error', error: { type: 'invalid_request_error', message: 'fallbacks: unknown field' } } };
+  await page.getByTestId('photo-input').setInputFiles(photoFile);
+  await expect(page.getByTestId('photo-detail')).toHaveText('fallbacks: unknown field');
+  await page.locator('#photo-close').click();
+
+  await page.getByTestId('photo-input').setInputFiles({ name: 'meal.heic', mimeType: 'image/heic', buffer: Buffer.from('not an image') });
+  await expect(page.getByTestId('photo-status')).toContainText('HEIC');
+  await expect(page.getByTestId('photo-retry')).toBeHidden();
   expect(await page.evaluate(() => typeof window.confirmItems)).toBe('function');
 });
 

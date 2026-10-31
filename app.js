@@ -7,7 +7,7 @@ import {
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
-import { analyzePhoto, pickFood, VisionError, ERROR_TEXT } from './lib/vision.js';
+import { analyzePhoto, pickFood, VisionError, ERROR_TEXT, NO_RETRY } from './lib/vision.js';
 import { BUILD } from './build-info.js';
 import { createUpdater } from './lib/update.js';
 
@@ -119,6 +119,8 @@ const updater = createUpdater({
   cacheExists: async (version) => { try { return await caches.has(`kalorit-app-${version}`); } catch { return false; } },
   isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
     || (state.view === 'add' && $('#search').value.trim() !== ''),
+  // the camera or picker is open over the app, a paid recognition is running, or its items await approval
+  keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming,
   reload: () => location.reload(),
   notify: (event, info) => {
     if (event === 'updated') toast(`האפליקציה עודכנה ✓ ${builtText(info.builtAt)}`);
@@ -326,7 +328,8 @@ function renderMealPicker() {
 }
 
 function foodRow(food, extra = '') {
-  const tag = food.src === 'off' ? '<span class="tag">ברקוד</span>' : food.id.startsWith('u') ? '<span class="tag">שלי</span>' : '';
+  const tag = food.src === 'off' ? '<span class="tag">ברקוד</span>' : food.src === 'ai' ? '<span class="tag">הערכה</span>'
+    : food.id.startsWith('u') ? '<span class="tag">שלי</span>' : '';
   return `<li><button class="row" data-food="${esc(food.id)}" data-testid="result">
     <span class="grow"><span class="name">${esc(food.n)}${tag}</span><span class="sub">${fmt(food.kcal)} קק״ל ל-100 ג׳${extra}</span></span>
     <span aria-hidden="true">＋</span></button></li>`;
@@ -463,7 +466,9 @@ window.confirmItems = confirmItems;   // used by tests
 
 // Downscales the photo before upload: Claude reads food fine at ~1.5 MP, and phone photos are 10+ MB.
 async function photoToJpeg(file, maxSide = 1568) {
-  const bmp = await createImageBitmap(file);
+  let bmp;
+  try { bmp = await createImageBitmap(file); }
+  catch (e) { throw new VisionError('bad_image', String(e?.message || e)); }   // HEIC, or too large for memory
   const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(bmp.width * scale));
@@ -474,7 +479,8 @@ async function photoToJpeg(file, maxSide = 1568) {
   return { dataUrl, base64: dataUrl.slice(dataUrl.indexOf(',') + 1) };
 }
 
-const photo = { file: null, ctrl: null };
+// picking: camera/picker open; ctrl: request in flight; confirming: recognized items awaiting approval
+const photo = { file: null, ctrl: null, picking: false, confirming: false };
 
 async function analyzeMeal(file) {
   const sheet = $('#photo-sheet');
@@ -484,6 +490,7 @@ async function analyzeMeal(file) {
   const ctrl = photo.ctrl = new AbortController();
   $('#photo-actions').hidden = true;
   $('#photo-settings').hidden = true;
+  $('#photo-detail').hidden = true;
   status.textContent = 'מזהה את המנה…';
   if (!sheet.open) sheet.showModal();
   try {
@@ -502,15 +509,21 @@ async function analyzeMeal(file) {
         : (it.name !== food.n ? `זוהה: ${it.name}` : '');
       return { food, amount: it.grams, unit: 'g', note };
     });
+    photo.ctrl = null;
     sheet.close();
-    confirmItems(items);
+    photo.confirming = true;
+    confirmItems(items).finally(() => { photo.confirming = false; });
   } catch (e) {
     if (ctrl.signal.aborted || e?.code === 'cancelled') return;
+    photo.ctrl = null;
     const code = e instanceof VisionError ? e.code : 'api';
-    if (!(e instanceof VisionError)) console.warn('photo recognition failed', e);
+    console.warn('photo recognition failed', code, e?.message || e);
     status.textContent = ERROR_TEXT[code] || ERROR_TEXT.api;
+    const detail = e?.detail || (code === 'api' ? String(e?.message || '') : '');
+    $('#photo-detail').textContent = detail;
+    $('#photo-detail').hidden = !detail;
     $('#photo-actions').hidden = false;
-    $('#photo-retry').hidden = code === 'no_key' || code === 'auth';
+    $('#photo-retry').hidden = NO_RETRY.has(code);
     $('#photo-settings').hidden = !(code === 'no_key' || code === 'auth');
   }
 }
@@ -808,7 +821,9 @@ function bind() {
     if (food) confirmItems([{ food }]);
   });
 
-  $('#photo-input').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) analyzeMeal(f); };
+  $('#photo-input').onclick = () => { photo.picking = true; };
+  $('#photo-input').addEventListener('cancel', () => { photo.picking = false; });
+  $('#photo-input').onchange = (e) => { photo.picking = false; const f = e.target.files[0]; e.target.value = ''; if (f) analyzeMeal(f); };
   $('#photo-close').onclick = closePhoto;
   $('#photo-sheet').addEventListener('cancel', (e) => { e.preventDefault(); closePhoto(); });
   $('#photo-retry').onclick = () => { if (photo.file) analyzeMeal(photo.file); };
@@ -877,6 +892,8 @@ function bind() {
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') { updater.onHidden(); return; }
+    // back from the camera or picker: the change event (if any) fires right after this
+    if (photo.picking) setTimeout(() => { photo.picking = false; }, 3000);
     if (state.view === 'today') renderToday();
     sync.syncNow();
     updater.check();
