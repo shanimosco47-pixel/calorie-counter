@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>קלורית</title>
+  <meta name="description" content="מעקב קלוריות בעברית עם מאגר המזון הישראלי צמרת">
+  <meta name="theme-color" content="#0f766e" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#134e4a" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="kalorit.webmanifest">
+  <link rel="icon" href="icons/food-192.png">
+  <link rel="apple-touch-icon" href="icons/food-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn" id="day-prev" aria-label="יום קודם">‹</button>
+    <div class="topbar-title">
+      <h1>קלורית</h1>
+      <button class="date-label" id="date-label" data-testid="date-label"></button>
+    </div>
+    <button class="icon-btn" id="day-next" aria-label="יום הבא">›</button>
+  </header>
+
+  <main>
+    <!-- Today -->
+    <section class="view" id="view-today" data-testid="view-today">
+      <div class="card install-card" id="install-card" data-testid="install-card" hidden>
+        <div class="grow"><strong>התקנת קלורית בטלפון</strong><span class="muted">אייקון במסך הבית, פתיחה במסך מלא</span></div>
+        <button type="button" class="btn" id="install-btn" data-testid="install-btn">התקנה</button>
+      </div>
+      <div class="card summary">
+        <div class="ring" id="ring" data-testid="ring">
+          <svg viewBox="0 0 120 120" aria-hidden="true">
+            <circle class="ring-bg" cx="60" cy="60" r="52"/>
+            <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52"/>
+          </svg>
+          <div class="ring-text">
+            <strong id="remaining" data-testid="remaining">0</strong>
+            <span id="remaining-label">נותרו</span>
+          </div>
+        </div>
+        <div class="summary-nums">
+          <div><span>יעד</span><strong id="target" data-testid="target">0</strong></div>
+          <div><span>נאכל</span><strong id="eaten" data-testid="eaten">0</strong></div>
+        </div>
+        <div class="macros" id="macros"></div>
+      </div>
+
+      <div class="card" id="quick-card">
+        <h2>הוספה מהירה</h2>
+        <div class="chips" id="quick" data-testid="quick"></div>
+      </div>
+
+      <div id="meals"></div>
+    </section>
+
+    <!-- Add -->
+    <section class="view" id="view-add" data-testid="view-add" hidden>
+      <div class="segmented" id="meal-picker" role="radiogroup" aria-label="ארוחה"></div>
+      <div class="search-row">
+        <input type="search" id="search" data-testid="search" placeholder="חיפוש מזון, למשל: חומוס, פיתה, קוטג׳" autocomplete="off" enterkeyhint="search">
+      </div>
+      <div class="action-row photo-row">
+        <button type="button" class="btn" id="open-camera" data-testid="open-camera">📸 צילום מנה</button>
+        <label class="btn secondary file-btn" data-testid="open-photo">🖼️ מהגלריה
+          <input type="file" accept="image/*" id="photo-input" data-testid="photo-input" hidden>
+        </label>
+      </div>
+      <div class="action-row">
+        <button class="btn secondary" id="open-scan" data-testid="open-scan">📷 סריקת ברקוד</button>
+        <button class="btn secondary" id="open-new-food" data-testid="open-new-food">＋ מזון חדש</button>
+      </div>
+      <div class="tabs" id="add-tabs" role="tablist">
+        <button role="tab" data-tab="recent" aria-selected="true">אחרונים</button>
+        <button role="tab" data-tab="fav">מועדפים</button>
+        <button role="tab" data-tab="mine">המזונות שלי</button>
+      </div>
+      <ul class="list" id="results" data-testid="results"></ul>
+      <p class="muted center" id="results-empty" hidden></p>
+    </section>
+
+    <!-- History -->
+    <section class="view" id="view-history" data-testid="view-history" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>קלוריות</h2>
+          <div class="segmented small" id="range-picker">
+            <button data-range="7" aria-pressed="true" data-testid="range-7">7 ימים</button>
+            <button data-range="30" aria-pressed="false" data-testid="range-30">30 ימים</button>
+          </div>
+        </div>
+        <div class="chart-box"><canvas id="kcal-chart" data-testid="kcal-chart"></canvas></div>
+        <p class="muted" id="avg-line"></p>
+      </div>
+
+      <div class="card">
+        <h2>משקל</h2>
+        <form class="inline-form" id="weight-form">
+          <input type="number" inputmode="decimal" step="0.1" min="20" max="400" id="weight-input" data-testid="weight-input" placeholder="ק״ג" required>
+          <button class="btn" data-testid="weight-save">שמירה</button>
+        </form>
+        <div class="chart-box"><canvas id="weight-chart" data-testid="weight-chart"></canvas></div>
+        <ul class="list compact" id="weight-list" data-testid="weight-list"></ul>
+      </div>
+
+      <div class="card">
+        <h2>ימים קודמים</h2>
+        <ul class="list compact" id="day-list" data-testid="day-list"></ul>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section class="view" id="view-settings" data-testid="view-settings" hidden>
+      <form class="card form" id="target-form">
+        <h2>יעד קלורי יומי</h2>
+        <div class="segmented" id="target-mode">
+          <button type="button" data-mode="calc" aria-pressed="true" data-testid="mode-calc">חישוב לפי נתונים</button>
+          <button type="button" data-mode="manual" aria-pressed="false" data-testid="mode-manual">הזנה ידנית</button>
+        </div>
+
+        <div id="manual-fields" hidden>
+          <label>קלוריות ליום<input type="number" inputmode="numeric" min="800" max="6000" id="manual-target" data-testid="manual-target"></label>
+        </div>
+
+        <div id="calc-fields">
+          <div class="grid2">
+            <label>מין
+              <select id="p-sex" data-testid="p-sex"><option value="female">אישה</option><option value="male">גבר</option></select>
+            </label>
+            <label>גיל<input type="number" inputmode="numeric" min="14" max="100" id="p-age" data-testid="p-age"></label>
+            <label>גובה (ס״מ)<input type="number" inputmode="numeric" min="120" max="230" id="p-height" data-testid="p-height"></label>
+            <label>משקל (ק״ג)<input type="number" inputmode="decimal" step="0.1" min="30" max="300" id="p-weight" data-testid="p-weight"></label>
+          </div>
+          <label>רמת פעילות<select id="p-activity" data-testid="p-activity"></select></label>
+          <label>מטרה<select id="p-goal" data-testid="p-goal"></select></label>
+          <p class="calc-result" id="calc-result" data-testid="calc-result"></p>
+        </div>
+        <button class="btn" data-testid="target-save">שמירת יעד</button>
+      </form>
+
+      <div class="card form" id="sync-card" data-testid="sync-card">
+        <h2>סנכרון לענן</h2>
+        <div id="sync-off">
+          <p class="muted">גיבוי אוטומטי לענן וסנכרון בין מכשירים, בלי חשבון ובלי סיסמה: האפליקציה יוצרת קוד סודי, וכל מכשיר שמזינים בו את הקוד רואה את אותם נתונים.</p>
+          <div class="action-row">
+            <button type="button" class="btn" id="sync-create" data-testid="sync-create">הפעלת סנכרון</button>
+            <button type="button" class="btn secondary" id="sync-join-open" data-testid="sync-join-open">יש לי קוד</button>
+          </div>
+          <form class="inline-form" id="sync-join-form" hidden>
+            <input id="sync-join-code" data-testid="sync-join-code" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" dir="ltr" required>
+            <button class="btn" data-testid="sync-join">חיבור</button>
+          </form>
+        </div>
+        <div id="sync-on" hidden>
+          <p class="sync-status" id="sync-status" data-testid="sync-status"></p>
+          <label>קוד הסנכרון שלך<output class="code-box" dir="ltr" id="sync-code" data-testid="sync-code"></output></label>
+          <p class="muted">שמרו את הקוד במקום בטוח, למשל שלחו אותו לעצמכם במייל. בעזרתו מחברים טלפון חדש. מי שמחזיק בקוד יכול לראות את הנתונים.</p>
+          <div class="action-row">
+            <button type="button" class="btn secondary" id="sync-share" data-testid="sync-share">שמירת הקוד</button>
+            <button type="button" class="btn secondary" id="sync-now" data-testid="sync-now">סנכרון עכשיו</button>
+          </div>
+          <button type="button" class="btn secondary block" id="sync-disconnect" data-testid="sync-disconnect">ניתוק המכשיר מהסנכרון</button>
+        </div>
+      </div>
+
+      <div class="card form">
+        <h2>גיבוי</h2>
+        <p class="muted">קובץ גיבוי ידני, לשמירה מחוץ לאפליקציה.</p>
+        <div class="action-row">
+          <button class="btn secondary" id="export-btn" data-testid="export-btn">ייצוא גיבוי</button>
+          <label class="btn secondary file-btn">ייבוא גיבוי
+            <input type="file" accept="application/json,.json" id="import-input" data-testid="import-input" hidden>
+          </label>
+        </div>
+      </div>
+
+      <details class="card form" id="experimental">
+        <summary>זיהוי מנות מתמונה</summary>
+        <p class="muted">בלחיצה על "צילום מנה" במסך ההוספה: מצלמים, Claude מזהה את הפריטים ומעריך כמויות, ואתם מאשרים או מתקנים לפני ששום דבר נכנס ליומן.</p>
+        <p class="muted">התמונות שמצלמים באפליקציה לא נשמרות בגלריה, בטלפון או באפליקציה: הן נשלחות לזיהוי בלבד ונמחקות מהזיכרון מיד אחריו.</p>
+        <p class="muted">המפתח נשמר בטלפון בלבד, לא מסונכרן לענן, ונשלח רק ל-Anthropic יחד עם התמונה. כל זיהוי עולה פחות מעשירית סנט מהחשבון שלכם (כ-1,500 תמונות לדולר). מומלץ להגדיר תקרת הוצאה למפתח ב-console.anthropic.com.</p>
+        <label>מפתח Claude API<input type="password" id="api-key" data-testid="api-key" autocomplete="off" placeholder="sk-ant-..."></label>
+        <button type="button" class="btn secondary" id="api-key-save" data-testid="api-key-save">שמירת מפתח</button>
+      </details>
+
+      <div class="card">
+        <h2>אודות</h2>
+        <p class="version-line" data-testid="version-line">גרסה <span id="app-version"></span> · עודכנה <span id="app-built" data-testid="app-built"></span></p>
+        <button type="button" class="btn secondary block" id="check-update" data-testid="check-update">בדיקת עדכונים</button>
+        <p class="muted">נתוני מזון: מאגר צמרת, משרד הבריאות (data.gov.il). מוצרים ארוזים: Open Food Facts.</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottomnav" aria-label="ניווט">
+    <button data-view="today" aria-current="page" data-testid="nav-today"><span>🍽️</span>היום</button>
+    <button data-view="add" data-testid="nav-add"><span>＋</span>הוספה</button>
+    <button data-view="history" data-testid="nav-history"><span>📈</span>היסטוריה</button>
+    <button data-view="settings" data-testid="nav-settings"><span>⚙️</span>הגדרות</button>
+  </nav>
+
+  <!-- Confirm items: the single entry point for logging food (search, barcode, photos) -->
+  <dialog class="sheet" id="confirm-sheet" data-testid="confirm-sheet">
+    <form method="dialog" id="confirm-form">
+      <header class="sheet-head"><h2 id="confirm-title">הוספה ליומן</h2><button class="icon-btn" value="cancel" formnovalidate aria-label="סגירה">✕</button></header>
+      <div id="confirm-items"></div>
+      <label>ארוחה<select id="confirm-meal" data-testid="confirm-meal"></select></label>
+      <div class="confirm-total">סה״כ: <strong id="confirm-total" data-testid="confirm-total">0</strong> קק״ל</div>
+      <button class="btn block" value="save" id="confirm-save" data-testid="confirm-save">הוספה ליומן</button>
+    </form>
+  </dialog>
+
+  <dialog class="sheet" id="scan-sheet" data-testid="scan-sheet">
+    <div>
+      <header class="sheet-head"><h2>סריקת ברקוד</h2><button class="icon-btn" id="scan-close" aria-label="סגירה">✕</button></header>
+      <div id="scanner" class="scanner"></div>
+      <p class="muted center" id="scan-status">כוונו את המצלמה לברקוד</p>
+      <form class="inline-form" id="barcode-form">
+        <input type="text" inputmode="numeric" pattern="[0-9]{6,14}" id="barcode-input" data-testid="barcode-input" placeholder="או הקלידו מספר ברקוד" required>
+        <button class="btn" data-testid="barcode-go">חיפוש</button>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="sheet" id="photo-sheet" data-testid="photo-sheet">
+    <div>
+      <header class="sheet-head"><h2>זיהוי מנה</h2><button type="button" class="icon-btn" id="photo-close" aria-label="סגירה">✕</button></header>
+      <video id="camera" class="camera" data-testid="camera" aria-label="תצוגת מצלמה" playsinline muted hidden></video>
+      <button type="button" class="btn block" id="shutter" data-testid="shutter" hidden>צלם</button>
+      <img id="photo-preview" class="photo-preview" alt="">
+      <p class="center" id="photo-status" data-testid="photo-status" role="status"></p>
+      <p class="muted center" id="photo-detail" data-testid="photo-detail" dir="ltr" hidden></p>
+      <div class="action-row" id="photo-actions" hidden>
+        <button type="button" class="btn" id="photo-retry" data-testid="photo-retry">ניסיון נוסף</button>
+        <button type="button" class="btn secondary" id="photo-settings" data-testid="photo-settings" hidden>להגדרות</button>
+        <label class="btn secondary file-btn" id="camera-app" data-testid="camera-app" hidden>צילום באפליקציית המצלמה
+          <input type="file" accept="image/*" capture="environment" id="camera-input" data-testid="camera-input" hidden>
+        </label>
+      </div>
+      <p class="muted center" id="camera-app-note" data-testid="camera-app-note" hidden>באפליקציית המצלמה של הטלפון ייתכן שהתמונה תישמר גם בגלריה.</p>
+    </div>
+  </dialog>
+
+  <dialog class="sheet" id="food-sheet" data-testid="food-sheet">
+    <form id="food-form">
+      <header class="sheet-head"><h2 id="food-form-title">מזון חדש</h2><button type="button" class="icon-btn" id="food-close" aria-label="סגירה">✕</button></header>
+      <p class="muted" id="food-form-hint">הערכים מופיעים על גב האריזה, בטבלה "ל-100 גרם".</p>
+      <label>שם<input id="ff-name" data-testid="ff-name" required maxlength="120"></label>
+      <div class="segmented ff-kind" id="ff-kind" role="group" aria-label="סוג המזון">
+        <button type="button" data-kind="solid" aria-pressed="true" data-testid="ff-solid">מוצק (גרם)</button>
+        <button type="button" data-kind="liquid" aria-pressed="false" data-testid="ff-liquid">נוזל (מ״ל)</button>
+      </div>
+      <div class="grid2">
+        <label><span id="ff-kcal-label">קלוריות ל-100 גרם</span><input type="number" inputmode="decimal" step="0.1" min="0" max="900" id="ff-kcal" data-testid="ff-kcal" required></label>
+        <label>חלבון (ג׳)<input type="number" inputmode="decimal" step="0.1" min="0" max="100" id="ff-p" data-testid="ff-p"></label>
+        <label>פחמימות (ג׳)<input type="number" inputmode="decimal" step="0.1" min="0" max="100" id="ff-c" data-testid="ff-c"></label>
+        <label>שומן (ג׳)<input type="number" inputmode="decimal" step="0.1" min="0" max="100" id="ff-f" data-testid="ff-f"></label>
+      </div>
+      <fieldset class="ff-units">
+        <legend>יחידות מידה (רשות)</legend>
+        <p class="muted" id="ff-units-hint">כדי לרשום למשל "2 פרוסות" בלי לשקול. בוחרים יחידה וכותבים כמה היא שוקלת.</p>
+        <div class="chips wrap" id="ff-unit-chips"></div>
+        <div id="ff-units"></div>
+        <button type="button" class="btn secondary block" id="ff-add-unit" data-testid="ff-add-unit">＋ יחידה אחרת</button>
+      </fieldset>
+      <label>ברקוד<input inputmode="numeric" id="ff-barcode" data-testid="ff-barcode"></label>
+      <button class="btn block" data-testid="ff-save">שמירה והמשך</button>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden><span id="toast-text"></span><button id="toast-undo" hidden>ביטול</button></div>
+
+  <script src="vendor/dexie.min.js"></script>
+  <script src="vendor/chart.umd.js" defer></script>
+  <script src="vendor/html5-qrcode.min.js" defer></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
