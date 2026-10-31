@@ -386,3 +386,38 @@ test('undo after a synced delete survives, even when the row came from a phone w
   await b.sync.connect(code);
   assert.ok(await b.db.log.get(row.id));
 });
+
+test('deletes kept from a disconnect are not replayed into a different sync code (Codex P2)', async () => {
+  const remote = fakeRemote();
+  const codeA = generateCode();
+  const codeB = generateCode();
+  // vault B has a weight for a date
+  const other = device(remote);
+  await other.sync.connect(codeB);
+  await other.store.put('weights', { date: '2026-10-20', kg: 80 });
+  await other.sync.syncNow();
+
+  const a = device(remote);
+  await a.sync.connect(codeA);
+  await a.store.put('weights', { date: '2026-10-20', kg: 70 });
+  await a.sync.syncNow();
+  remote.online = false;
+  await a.store.remove('weights', '2026-10-20');          // deleted offline: the tombstone stays in the outbox
+  await a.sync.disconnect();
+  remote.online = true;
+  await a.sync.connect(codeB);                             // joins a different vault
+  const inB = remote.rows.get(`${codeB}|weights|2026-10-20`);
+  assert.equal(inB.data?.kg, 80, 'vault B keeps its weight');
+
+  // reconnecting to the same code still sends the kept delete
+  const c = device(remote);
+  await c.sync.connect(codeA);
+  await c.store.put('weights', { date: '2026-10-21', kg: 71 });
+  await c.sync.syncNow();
+  remote.online = false;
+  await c.store.remove('weights', '2026-10-21');
+  await c.sync.disconnect();
+  remote.online = true;
+  await c.sync.connect(codeA);
+  assert.equal(remote.rows.get(`${codeA}|weights|2026-10-21`).data, null, 'same vault: the delete is sent');
+});
