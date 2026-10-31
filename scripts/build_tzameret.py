@@ -143,6 +143,22 @@ def main(raw, out):
     borrowed = borrowed_measures(foods, measures, units)
     measures.update(borrowed)
 
+    # Curated corrections of household measures that are clearly wrong in the source data:
+    # a glass of wine is ~150 ml, not 60 g (sake in the same table already has 150).
+    for f in foods:
+        name = " ".join(f["shmmitzrach"].split())
+        if name.startswith("משקה אלכוהולי, יין"):
+            for m in measures.get(f["Code"], []):
+                if m[0] == "204":
+                    m[1] = 150.0
+
+    def measure_order(m):
+        code = m[0]
+        if code == "egg":
+            return -1
+        base = code[1:] if code.startswith("b") else code
+        return int(base) if base.isdigit() else 0   # a borrowed egg unit ("begg") sorts first too
+
     out_foods = []
     for f in foods:
         name = " ".join(f["shmmitzrach"].split())
@@ -158,7 +174,7 @@ def main(raw, out):
             "fib": num(f["total_dietary_fiber"]),
             "sug": num(f["total_sugars"]),
             "na": num(f["sodium"]),
-            "m": sorted(measures.get(f["Code"], []), key=lambda m: -1 if m[0] == "egg" else int(m[0].lstrip("b"))),
+            "m": sorted(measures.get(f["Code"], []), key=measure_order),
         })
 
     used = {m[0] for f in out_foods for m in f["m"]}

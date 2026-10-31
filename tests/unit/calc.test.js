@@ -134,3 +134,12 @@ test('audit: default portions are a realistic serving, not a whole loaf, bar or 
   // everyday staples are unchanged
   assert.ok(kcalOf(/^פיתה, קלויה/) > 150 && kcalOf(/^פיתה, קלויה/) < 350, 'pita');
 });
+
+test('audit: target minimum depends on sex, is capped, and says when it was clamped', async () => {
+  const { targetInfo, MIN_TARGET_MALE, MAX_TARGET } = await import('../../lib/calc.js');
+  const oldMan = { sex: 'male', weight: 60, height: 170, age: 70, activity: 1.2, goal: -500 };
+  assert.deepEqual([targetInfo(oldMan).target, targetInfo(oldMan).clamped], [MIN_TARGET_MALE, 'low']);
+  const huge = { sex: 'male', weight: 300, height: 200, age: 14, activity: 1.9, goal: 300 };
+  assert.deepEqual([targetInfo(huge).target, targetInfo(huge).clamped], [MAX_TARGET, 'high']);
+  assert.equal(targetInfo({ sex: 'female', weight: 65, height: 165, age: 35, activity: 1.375, goal: -500 }).clamped, null);
+});

@@ -3,7 +3,7 @@ import { createSync } from './lib/sync.js';
 import { supabaseRemote } from './lib/remote.js';
 import { buildIndex, matchFood } from './lib/match.js';
 import {
-  MEALS, ACTIVITY, GOALS, gramsFor, nutrientsFor, sumEntries, totalsByMeal, dailyTarget,
+  MEALS, ACTIVITY, GOALS, gramsFor, nutrientsFor, sumEntries, totalsByMeal, dailyTarget, targetInfo,
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
@@ -11,7 +11,7 @@ import { analyzePhoto, pickFood, amountFor, VisionError, ERROR_TEXT, NO_RETRY } 
 import { BUILD } from './build-info.js';
 import { createUpdater } from './lib/update.js';
 
-export const APP_VERSION = '1.10.0';
+export const APP_VERSION = '1.11.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -208,7 +208,8 @@ async function renderSyncStatus(st) {
     el.textContent = `⚠️ לא סונכרן: ${st.lastError}. ננסה שוב אוטומטית.`;
   } else if (st.lastSync) {
     el.className = 'sync-status ok';
-    el.textContent = `✓ מסונכרן · עודכן ב-${timeText(st.lastSync)}` + (st.pending ? ` · ${st.pending} שינויים ממתינים` : '');
+    el.textContent = `✓ מסונכרן · עודכן ב-${timeText(st.lastSync)}` + (st.pending ? ` · ${st.pending} שינויים ממתינים` : '')
+      + (st.skipped ? ` · ${st.skipped} פריטים פגומים לא נשמרו בענן` : '');
   } else {
     el.className = 'sync-status';
     el.textContent = 'מסנכרן…';
@@ -245,8 +246,14 @@ function rollDay() {
   return true;
 }
 
-function show(view) {
+// Each screen other than "today" is a history step, so Android's back button returns to "today"
+// instead of closing the app.
+function show(view, { fromHistory = false } = {}) {
   rollDay();
+  if (!fromHistory) {
+    if (view !== 'today' && history.state?.view !== view) history[history.state?.view ? 'replaceState' : 'pushState']({ view }, '');
+    else if (view === 'today' && history.state?.view) history.back();
+  }
   state.view = view;
   for (const v of $$('.view')) v.hidden = v.id !== `view-${view}`;
   for (const b of $$('.bottomnav button')) {
@@ -352,12 +359,13 @@ function renderMealPicker() {
     <button role="radio" aria-checked="${m.id === state.addMeal}" data-meal="${m.id}" data-testid="pick-${m.id}">${m.label}</button>`).join('');
 }
 
-function foodRow(food, extra = '') {
+function foodRow(food, extra = '', { deletable = false } = {}) {
   const tag = food.src === 'off' ? '<span class="tag">ברקוד</span>' : food.src === 'ai' ? '<span class="tag">הערכה</span>'
     : food.id.startsWith('u') ? '<span class="tag">שלי</span>' : '';
   return `<li><button class="row" data-food="${esc(food.id)}" data-testid="result">
     <span class="grow"><span class="name">${esc(food.n)}${tag}</span><span class="sub">${fmt(food.kcal)} קק״ל ל-100 ${baseShort(food)}${extra}</span></span>
-    <span aria-hidden="true">＋</span></button></li>`;
+    <span aria-hidden="true">＋</span></button>${deletable
+      ? `<button class="del" data-del-food="${esc(food.id)}" aria-label="מחיקת ${esc(food.n)}" data-testid="del-food">🗑</button>` : ''}</li>`;
 }
 
 let searchTimer;
@@ -381,7 +389,8 @@ async function renderResults() {
     foods = [...state.myFoods].sort((a, b) => a.n.localeCompare(b.n, 'he'));
     empty.textContent = 'מזונות שתוסיפו או תסרקו יופיעו כאן.';
   }
-  ul.innerHTML = foods.map((f) => foodRow(f)).join('');
+  const deletable = !q && state.addTab === 'mine';
+  ul.innerHTML = foods.map((f) => foodRow(f, '', { deletable })).join('');
   empty.hidden = foods.length > 0;
 }
 
@@ -964,9 +973,12 @@ function readProfile() {
 
 function updateCalcPreview() {
   const p = readProfile();
-  $('#calc-result').textContent = p.age && p.height && p.weight
-    ? `היעד המחושב: ${fmt(dailyTarget(p))} קק״ל ליום`
-    : 'מלאו גיל, גובה ומשקל כדי לחשב יעד.';
+  if (!(p.age && p.height && p.weight)) { $('#calc-result').textContent = 'מלאו גיל, גובה ומשקל כדי לחשב יעד.'; return; }
+  const t = targetInfo(p);
+  const note = t.clamped === 'low'
+    ? ` (החישוב יצא ${fmt(t.raw)}; זה המינימום המומלץ בלי ליווי רפואי)`
+    : t.clamped === 'high' ? ` (החישוב יצא ${fmt(t.raw)}; כדאי לבדוק את הנתונים)` : '';
+  $('#calc-result').textContent = `היעד המחושב: ${fmt(t.target)} קק״ל ליום${note}`;
 }
 
 async function saveTarget(ev) {
@@ -998,7 +1010,7 @@ async function exportBackup() {
 async function importBackup(file) {
   try {
     const data = parseBackup(await file.text());
-    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הנתונים הנוכחיים יוחלפו.`)) return;
+    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הנתונים בטלפון הזה יוחלפו, וכשהסנכרון פעיל גם במכשירים המחוברים (שינויים שנעשו אחרי הגיבוי נשמרים).`)) return;
     await restoreAll(data);
     await refreshMyFoods();
     await loadTarget();
@@ -1063,7 +1075,20 @@ function bind() {
     for (const t of $$('#add-tabs button')) t.setAttribute('aria-selected', String(t === b));
     renderResults();
   });
-  $('#results').addEventListener('click', (e) => {
+  $('#results').addEventListener('click', async (e) => {
+    const del = e.target.closest('[data-del-food]');
+    if (del) {
+      // diary entries keep their own numbers, so removing a saved food never changes the diary
+      const id = del.dataset.delFood;
+      const food = state.myFoods.find((f) => f.id === id);
+      const wasFav = state.favIds.has(id);
+      await remove('myFoods', id);
+      if (wasFav) await remove('favorites', id);
+      await refreshMyFoods();
+      renderResults();
+      if (food) toast('המזון נמחק', async () => { await put('myFoods', food); if (wasFav) await put('favorites', { foodId: id }); await refreshMyFoods(); renderResults(); });
+      return;
+    }
     const b = e.target.closest('[data-food]');
     const food = b && state.byId.get(b.dataset.food);
     if (food) confirmItems([{ food }]);
@@ -1130,12 +1155,22 @@ function bind() {
     if (!(kg > 0)) return;
     await put('weights', { date: isoDate(), kg });
     $('#weight-input').value = '';
+    // the calculated target follows the latest weight
+    const profile = await getSetting('profile', null);
+    if (profile && profile.weight !== kg) {
+      await setSetting('profile', { ...profile, weight: kg });
+      await loadTarget();
+    }
     toast(`נשמר: ${kg} ק״ג`);
     renderWeights();
   };
   $('#weight-list').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-del-weight]');
-    if (b) { await remove('weights', b.dataset.delWeight); renderWeights(); }
+    if (!b) return;
+    const prev = await db.weights.get(b.dataset.delWeight);
+    await remove('weights', b.dataset.delWeight);
+    renderWeights();
+    if (prev) toast('השקילה נמחקה', async () => { await put('weights', prev); renderWeights(); });
   });
 
   $('#target-mode').addEventListener('click', (e) => {
@@ -1198,6 +1233,10 @@ async function start() {
   } catch { /* never block startup */ }
 
   bind();
+  // ask the browser not to clear this app's data under storage pressure (it holds the only copy
+  // when sync is off)
+  try { navigator.storage?.persist?.().catch(() => {}); } catch { /* not supported */ }
+  window.addEventListener('popstate', (e) => show(e.state?.view || 'today', { fromHistory: true }));
   await Promise.all([loadFoods(), loadTarget()]);
   document.body.dataset.ready = '1';
   show('today');

@@ -75,9 +75,9 @@
         <button class="btn secondary" id="open-new-food" data-testid="open-new-food">＋ מזון חדש</button>
       </div>
       <div class="tabs" id="add-tabs" role="tablist">
-        <button role="tab" data-tab="recent" aria-selected="true">אחרונים</button>
-        <button role="tab" data-tab="fav">מועדפים</button>
-        <button role="tab" data-tab="mine">המזונות שלי</button>
+        <button role="tab" data-tab="recent" aria-selected="true" aria-controls="results">אחרונים</button>
+        <button role="tab" data-tab="fav" aria-selected="false" aria-controls="results">מועדפים</button>
+        <button role="tab" data-tab="mine" aria-selected="false" aria-controls="results">המזונות שלי</button>
       </div>
       <ul class="list" id="results" data-testid="results"></ul>
       <p class="muted center" id="results-empty" hidden></p>
