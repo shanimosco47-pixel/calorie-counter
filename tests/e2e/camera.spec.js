@@ -55,7 +55,7 @@ test('no camera access: offers the phone camera app instead', async ({ page }) =
   });
   await withKey(page);
   await page.getByTestId('open-camera').click();
-  await expect(page.getByTestId('photo-status')).toContainText('אין גישה למצלמה');
+  await expect(page.getByTestId('photo-status')).toContainText('אין הרשאה למצלמה');
   await expect(page.getByTestId('camera-app')).toBeVisible();
   await expect(page.getByTestId('camera-input')).toHaveAttribute('capture', 'environment');
 });
@@ -129,4 +129,43 @@ test('camera stopped by the system: the shutter never sends a frozen frame', asy
   await expect(page.getByTestId('confirm-sheet')).toBeVisible();
   expect(requests).toBe(1);
   expect(await liveTracks(page)).toBe(0);
+});
+
+test('camera that never delivers frames: gives up after 5 s and offers the fallback', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__streams = [];
+    navigator.mediaDevices.getUserMedia = async () => {
+      const s = document.createElement('canvas').captureStream(0);   // live track, no frames
+      window.__streams.push(s);
+      return s;
+    };
+  });
+  await withKey(page);
+  await page.getByTestId('open-camera').click();
+  await expect(page.getByTestId('photo-status')).toContainText('המצלמה לא זמינה', { timeout: 8000 });
+  await expect(page.getByTestId('camera-app')).toBeVisible();
+  await expect(page.getByTestId('shutter')).toBeHidden();
+  expect(await liveTracks(page)).toBe(0);
+});
+
+test('camera that keeps dropping: stops restarting and offers the fallback', async ({ page }) => {
+  await page.addInitScript(() => {
+    const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    window.__streams = [];
+    window.__calls = 0;
+    navigator.mediaDevices.getUserMedia = async (c) => {
+      window.__calls++;
+      const s = await real(c);
+      window.__streams.push(s);
+      setTimeout(() => { const t = s.getVideoTracks()[0]; t.stop(); t.dispatchEvent(new Event('ended')); }, 700);
+      return s;
+    };
+  });
+  await withKey(page);
+  await page.getByTestId('open-camera').click();
+  await expect(page.getByTestId('photo-status')).toContainText('המצלמה לא זמינה', { timeout: 8000 });
+  await page.waitForTimeout(2000);
+  expect(await page.evaluate(() => window.__calls)).toBe(3);   // first start + 2 restarts, then stop
+  expect(await liveTracks(page)).toBe(0);
+  await expect(page.getByTestId('photo-retry')).toBeVisible();
 });

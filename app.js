@@ -489,7 +489,7 @@ async function photoToJpeg(file) {
 // picking: picker or camera app open; ctrl: request in flight; confirming: recognized items awaiting
 // approval; stream: the in-app camera; source: the current photo, kept in memory only for "try again"
 // camGen: bumped on every stop, so a camera start that resolves late knows it is stale
-const photo = { source: null, ctrl: null, picking: false, confirming: false, stream: null, camGen: 0, restartCamera: false };
+const photo = { source: null, ctrl: null, picking: false, confirming: false, stream: null, camGen: 0, restartCamera: false, restarts: [] };
 
 function stopCamera() {
   photo.camGen++;
@@ -527,25 +527,40 @@ async function openCamera() {
     const video = $('#camera');
     video.srcObject = stream;
     video.hidden = false;
-    await video.play();
-    if (!video.videoWidth) {          // wait for the first frame, so the shutter always captures something
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('no frames')), 5000);
-        video.addEventListener('loadeddata', () => { clearTimeout(timer); resolve(); }, { once: true });
-      });
-    }
+    // wait for playback and the first frame, so the shutter always captures something; a camera with
+    // no frames never settles play(), hence the deadline around both
+    let timer;
+    try {
+      await Promise.race([
+        video.play().then(() => video.videoWidth || new Promise((resolve) => video.addEventListener('loadeddata', resolve, { once: true }))),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('no frames')), 5000); }),
+      ]);
+    } finally { clearTimeout(timer); }
     if (stale()) return;
     $('#shutter').hidden = false;
     $('#photo-status').textContent = 'כוונו למנה ולחצו "צלם"';
   } catch (e) {
     if (stale()) return;
     stopCamera();
-    $('#photo-status').textContent = 'אין גישה למצלמה מתוך האפליקציה. אפשר לצלם באפליקציית המצלמה, או לאשר הרשאת מצלמה בהגדרות הדפדפן.';
-    $('#photo-actions').hidden = false;
-    $('#photo-retry').hidden = true;
-    $('#camera-app').hidden = false;
-    $('#camera-app-note').hidden = false;
+    // a permission answer gets the permission hint; anything else (no frames, camera busy) does not
+    const denied = e?.name === 'NotAllowedError' || e?.name === 'SecurityError';
+    $('#photo-status').textContent = denied
+      ? 'אין הרשאה למצלמה. אפשר לאשר אותה בהגדרות הדפדפן, או לצלם באפליקציית המצלמה.'
+      : 'המצלמה לא זמינה כרגע. אפשר לנסות שוב, או לצלם באפליקציית המצלמה.';
+    showCameraFallback();
   }
+}
+
+function showCameraFallback() {
+  $('#photo-actions').hidden = false;
+  $('#photo-retry').hidden = false;   // "try again" restarts the in-app camera
+  $('#camera-app').hidden = false;
+  $('#camera-app-note').hidden = false;
+}
+
+function cameraUnavailable() {
+  $('#photo-status').textContent = 'המצלמה לא זמינה כרגע. אפשר לנסות שוב, או לצלם באפליקציית המצלמה.';
+  showCameraFallback();
 }
 
 // The system stopped the camera (another app took it, or the app was in the background).
@@ -553,6 +568,11 @@ function onCameraEnded(gen) {
   if (gen !== photo.camGen) return;   // we stopped it ourselves
   stopCamera();
   if (!$('#photo-sheet').open) return;
+  // a camera that keeps dropping (another app holding it): stop retrying and offer the fallback
+  const now = Date.now();
+  photo.restarts = photo.restarts.filter((t) => now - t < 10000);
+  if (photo.restarts.length >= 2) { cameraUnavailable(); return; }
+  photo.restarts.push(now);
   if (document.visibilityState === 'visible') openCamera();
   else photo.restartCamera = true;    // restart when the app is back in front
 }
@@ -923,7 +943,7 @@ function bind() {
     if (food) confirmItems([{ food }]);
   });
 
-  $('#open-camera').onclick = openCamera;
+  $('#open-camera').onclick = () => { photo.restarts = []; openCamera(); };
   $('#shutter').onclick = takePicture;
   for (const input of [$('#photo-input'), $('#camera-input')]) {
     input.onclick = () => { photo.picking = true; };
@@ -941,7 +961,10 @@ function bind() {
     stopCamera();
     forgetPhoto();
   });
-  $('#photo-retry').onclick = () => { if (photo.source) analyzeMeal(photo.source); };
+  $('#photo-retry').onclick = () => {
+    if (photo.source) analyzeMeal(photo.source);
+    else { photo.restarts = []; openCamera(); }   // the camera fallback screen
+  };
   $('#photo-settings').onclick = () => { closePhoto(); show('settings'); $('#experimental').open = true; $('#api-key').focus(); };
   $('#open-scan').onclick = openScanner;
   $('#scan-close').onclick = closeScanner;
