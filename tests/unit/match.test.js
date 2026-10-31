@@ -100,3 +100,23 @@ test('empty and unknown queries', () => {
   assert.deepEqual(matchFood('   ', index), []);
   assert.deepEqual(matchFood('קסדכגכשד', index), []);
 });
+
+test('audit: common spellings and plurals find the right food', () => {
+  const top = (q) => matchFood(q, index, { limit: 1 })[0]?.n || '';
+  assert.match(top('עגבנייה'), /^עגבניה/);
+  assert.match(top('נקניקייה'), /^נקניקיות/);
+  assert.match(top('ביצים קשות'), /^ביצה קשה/);
+  assert.match(top('פיתות'), /^פיתה/);
+  assert.match(top('לחמנייה'), /^לחמניה/);
+  assert.match(top('ביצים'), /^ביצה שלמה/);
+  assert.match(top('צ׳יפס'), /^תפוחי אדמה, מטוגנים/);
+  assert.match(top('פסטה'), /^אטריות\/פסטה, חיטה, מבושלות/);
+  assert.match(top('יין'), /^משקה אלכוהולי, יין/);
+  assert.match(top('קפה עם חלב'), /קפוצ'ינו/);
+  assert.match(top('הודו'), /^בשר הודו/);
+});
+
+test('long queries keep their trailing qualifiers (Codex P2)', () => {
+  const top = matchFood('גבינה לבנה עם זיתים 9%', index, { limit: 10 });
+  assert.ok(top.length === 0 || top.every((f) => /9%/.test(f.n)), top.map((f) => f.n).join(' | '));
+});

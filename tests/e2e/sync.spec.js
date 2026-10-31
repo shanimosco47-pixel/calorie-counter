@@ -13,17 +13,20 @@ function fakeServer() {
         const body = route.request().postDataJSON();
         expect(route.request().headers().apikey).toMatch(/^sb_publishable_/);
         if (body.p_code.length < 24) return route.fulfill({ status: 400, json: { message: 'invalid sync code' } });
-        if (fn === 'sync_push') {
+        if (fn === 'sync_push2') {
           for (const r of body.p_rows) {
             const key = `${body.p_code}|${r.kind}|${r.id}`;
             const cur = rows.get(key);
             if (!cur || r.ts >= cur.ts) rows.set(key, { ...r, code: body.p_code, updated_at: new Date(Date.UTC(2026, 0, 1) + ++clock * 1000).toISOString() });
           }
-          return route.fulfill({ json: body.p_rows.length });
+          return route.fulfill({ json: { applied: body.p_rows.length, rejected: [] } });
         }
+        expect(fn).toBe('sync_pull2');
+        const k = (r) => `${r.updated_at}|${r.kind}|${r.id}`;
+        const after = body.p_after_kind ? `${body.p_since}|${body.p_after_kind}|${body.p_after_id}` : null;
         const out = [...rows.values()]
-          .filter((r) => r.code === body.p_code && (!body.p_since || r.updated_at > body.p_since))
-          .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
+          .filter((r) => r.code === body.p_code && (after ? k(r) > after : (!body.p_since || r.updated_at >= body.p_since)))
+          .sort((a, b) => k(a).localeCompare(k(b)))
           .map(({ kind, id, data, ts, updated_at }) => ({ kind, id, data, ts, updated_at }));
         return route.fulfill({ json: out });
       });

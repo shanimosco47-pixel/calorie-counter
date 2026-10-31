@@ -58,6 +58,8 @@ test('mealForHour and addDays', () => {
   assert.equal(mealForHour(13), 'lunch');
   assert.equal(mealForHour(19), 'dinner');
   assert.equal(mealForHour(23), 'snack');
+  assert.equal(mealForHour(0), 'snack');
+  assert.equal(mealForHour(5), 'breakfast');
   assert.equal(addDays('2026-03-01', -1), '2026-02-28');
   assert.equal(addDays('2026-12-31', 1), '2027-01-01');
 });
@@ -112,4 +114,32 @@ test('user units: the first one is the default; liquids without units start at 1
   assert.deepEqual(defaultAmount({ kcal: 80, liquid: true, m: [] }), { amount: 100, unit: 'g' });
   // a small unit the user chose is still the default (no "too small to count" penalty)
   assert.deepEqual(defaultAmount({ kcal: 387, m: [['u1', 5, 'כפית']] }), { amount: 1, unit: 'u1' });
+});
+
+test('audit: default portions are a realistic serving, not a whole loaf, bar or bag', async () => {
+  const { readFileSync } = await import('node:fs');
+  const data = JSON.parse(readFileSync(new URL('../../data/tzameret.json', import.meta.url)));
+  const kcalOf = (re) => {
+    const f = data.foods.find((x) => re.test(x.n));
+    const a = defaultAmount(f);
+    return (gramsFor(f, a.amount, a.unit) * f.kcal) / 100;
+  };
+  assert.ok(kcalOf(/^לחם בגט, קלוי/) < 400, 'baguette');
+  assert.ok(kcalOf(/^לחם פומפרניקל/) < 400, 'pumpernickel loaf');
+  assert.ok(kcalOf(/^שוקולד מריר מעולה, עלית/) < 250, 'chocolate bar');
+  assert.ok(kcalOf(/^גבינת מוצרלה 22%/) < 300, 'mozzarella bag');
+  assert.ok(kcalOf(/^סוכר, חום/) < 200, 'cup of sugar');
+  assert.ok(kcalOf(/^תפוחי אדמה, מטוגנים, צ'יפס בשמן סויה/) > 150, 'fries: a portion, not one fry');
+  assert.ok(kcalOf(/^בשר עוף, חזה, ללא עצם, לפנ/) > 150, 'chicken breast');
+  // everyday staples are unchanged
+  assert.ok(kcalOf(/^פיתה, קלויה/) > 150 && kcalOf(/^פיתה, קלויה/) < 350, 'pita');
+});
+
+test('audit: target minimum depends on sex, is capped, and says when it was clamped', async () => {
+  const { targetInfo, MIN_TARGET_MALE, MAX_TARGET } = await import('../../lib/calc.js');
+  const oldMan = { sex: 'male', weight: 60, height: 170, age: 70, activity: 1.2, goal: -500 };
+  assert.deepEqual([targetInfo(oldMan).target, targetInfo(oldMan).clamped], [MIN_TARGET_MALE, 'low']);
+  const huge = { sex: 'male', weight: 300, height: 200, age: 14, activity: 1.9, goal: 300 };
+  assert.deepEqual([targetInfo(huge).target, targetInfo(huge).clamped], [MAX_TARGET, 'high']);
+  assert.equal(targetInfo({ sex: 'female', weight: 65, height: 165, age: 35, activity: 1.375, goal: -500 }).clamped, null);
 });

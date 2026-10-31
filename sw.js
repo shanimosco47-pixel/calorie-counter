@@ -1,5 +1,5 @@
 // Offline support: app shell and food data are cached; Open Food Facts, Supabase and Claude API requests always go to the network.
-const VERSION = 'kalorit-app-v1.10.0';
+const VERSION = 'kalorit-app-v1.11.0';
 const SHELL = [
   './',
   'index.html',
@@ -38,7 +38,7 @@ self.addEventListener('activate', (event) => {
 });
 
 // Pages and the manifest: network first, so an update reaches the phone on the very next open.
-// Everything else (code, food data, icons): cache first, refreshed in the background.
+// Everything else (code, food data, icons): from this build's cache.
 const NETWORK_FIRST = (req, url) => req.mode === 'navigate' || url.pathname.endsWith('.webmanifest') || url.pathname.endsWith('/sw.js');
 
 self.addEventListener('fetch', (event) => {
@@ -47,8 +47,10 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.endsWith('/version.json')) return;   // update check: always straight to the server
 
   if (NETWORK_FIRST(event.request, url)) {
+    // a slow network must not hang the app's start: after 3 s the cached page is used instead
+    const timeout = (ms) => new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms));
     event.respondWith(
-      fetch(event.request, { cache: 'no-cache' })
+      Promise.race([fetch(event.request, { cache: 'no-cache' }), timeout(3000)])
         .then(async (res) => {
           if (res.ok) {
             const cache = await caches.open(VERSION);
@@ -66,13 +68,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Code, data and icons: this build's own cache only. They were all stored together at install, so
+  // the running build never mixes in files of a newer deploy; the network is used only for a file the
+  // cache lacks. Updates come as a whole new build (new worker, new cache), never file by file.
   event.respondWith(
     caches.open(VERSION).then(async (cache) => {
       const cached = await cache.match(event.request, { ignoreSearch: true });
-      const network = fetch(event.request)
-        .then((res) => { if (res.ok) cache.put(event.request, res.clone()); return res; })
-        .catch(() => cached || Response.error());
-      return cached || network;
-    }),
+      if (cached) return cached;
+      const res = await fetch(event.request);
+      if (res.ok) cache.put(event.request, res.clone());
+      return res;
+    }).catch(() => Response.error()),
   );
 });

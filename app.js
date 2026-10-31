@@ -3,7 +3,7 @@ import { createSync } from './lib/sync.js';
 import { supabaseRemote } from './lib/remote.js';
 import { buildIndex, matchFood } from './lib/match.js';
 import {
-  MEALS, ACTIVITY, GOALS, gramsFor, nutrientsFor, sumEntries, totalsByMeal, dailyTarget,
+  MEALS, ACTIVITY, GOALS, gramsFor, nutrientsFor, sumEntries, totalsByMeal, dailyTarget, targetInfo,
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
@@ -11,15 +11,17 @@ import { analyzePhoto, pickFood, amountFor, VisionError, ERROR_TEXT, NO_RETRY } 
 import { BUILD } from './build-info.js';
 import { createUpdater } from './lib/update.js';
 
-export const APP_VERSION = '1.10.0';
+export const APP_VERSION = '1.11.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = (n) => Math.round(n).toLocaleString('he-IL');
+const fmt = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n)) : 0).toLocaleString('he-IL');
+const fmt1 = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n) * 10) / 10 : 0);
 
 const state = {
   date: isoDate(),
+  today: isoDate(),   // the calendar day the app last saw; when it changes, "today" moves with it
   view: 'today',
   addMeal: mealForHour(new Date().getHours()),
   addTab: 'recent',
@@ -109,6 +111,11 @@ function builtText(iso) {
     + ' ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
 }
 
+// the field the user has typed into since focusing it (unsaved text an update reload would lose)
+let typedIn = null;
+document.addEventListener('focusin', () => { typedIn = null; });
+document.addEventListener('input', (e) => { typedIn = e.target; });
+
 let localStore = null;
 try { localStore = window.localStorage; } catch { /* storage blocked */ }
 
@@ -123,7 +130,8 @@ const updater = createUpdater({
   serviceWorker: 'serviceWorker' in navigator && location.protocol !== 'file:' ? navigator.serviceWorker : null,
   cacheExists: async (version) => { try { return await caches.has(`kalorit-app-${version}`); } catch { return false; } },
   isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
-    || (state.view === 'add' && $('#search').value.trim() !== ''),
+    || (state.view === 'add' && $('#search').value.trim() !== '')
+    || (typedIn && typedIn === document.activeElement),   // mid-typing in a field (settings, weight, sync code, key)
   // the camera or picker is open over the app, a paid recognition is running, or its items await approval
   keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming || !!photo.stream,
   reload: () => location.reload(),
@@ -200,7 +208,8 @@ async function renderSyncStatus(st) {
     el.textContent = `⚠️ לא סונכרן: ${st.lastError}. ננסה שוב אוטומטית.`;
   } else if (st.lastSync) {
     el.className = 'sync-status ok';
-    el.textContent = `✓ מסונכרן · עודכן ב-${timeText(st.lastSync)}` + (st.pending ? ` · ${st.pending} שינויים ממתינים` : '');
+    el.textContent = `✓ מסונכרן · עודכן ב-${timeText(st.lastSync)}` + (st.pending ? ` · ${st.pending} שינויים ממתינים` : '')
+      + (st.skipped ? ` · ${st.skipped} פריטים פגומים לא נשמרו בענן` : '');
   } else {
     el.className = 'sync-status';
     el.textContent = 'מסנכרן…';
@@ -226,7 +235,25 @@ async function shareCode() {
 
 // ---------- navigation ----------
 
-function show(view) {
+// A new day while the app stayed open (Android keeps installed apps alive overnight): if the user
+// was looking at "today", move to the new today, and suggest the meal for the current hour again.
+function rollDay() {
+  const now = isoDate();
+  if (now === state.today) return false;
+  if (state.date === state.today) state.date = now;
+  state.today = now;
+  state.addMeal = mealForHour(new Date().getHours());
+  return true;
+}
+
+// Each screen other than "today" is a history step, so Android's back button returns to "today"
+// instead of closing the app.
+function show(view, { fromHistory = false } = {}) {
+  rollDay();
+  if (!fromHistory) {
+    if (view !== 'today' && history.state?.view !== view) history[history.state?.view ? 'replaceState' : 'pushState']({ view }, '');
+    else if (view === 'today' && history.state?.view) history.back();
+  }
   state.view = view;
   for (const v of $$('.view')) v.hidden = v.id !== `view-${view}`;
   for (const b of $$('.bottomnav button')) {
@@ -293,11 +320,11 @@ async function renderToday() {
       </div>
       ${list.length ? `<ul class="list compact">${list.map((e) => `
         <li data-testid="entry">
-          <button class="row grow" data-edit="${e.id}">
+          <button class="row grow" data-edit="${esc(e.id)}">
             <span class="grow"><span class="name">${esc(e.name)}</span><span class="sub">${esc(amountText(e))}</span></span>
             <span class="kcal">${fmt(e.kcal)}</span>
           </button>
-          <button class="del" data-del="${e.id}" aria-label="מחיקה">🗑</button>
+          <button class="del" data-del="${esc(e.id)}" aria-label="מחיקת ${esc(e.name)}">🗑</button>
         </li>`).join('')}</ul>` : ''}
     </div>`;
   }).join('');
@@ -309,8 +336,8 @@ async function renderQuick() {
   const recent = await recentFoods(10);
   $('#quick-card').hidden = recent.length === 0;
   $('#quick').innerHTML = recent.map((e) => `
-    <button class="chip" data-quick="${e.id}" data-testid="quick-chip" title="${esc(e.name)}">
-      ${esc(e.name.split(',')[0])} <small>${fmt(e.kcal)}</small>
+    <button class="chip" data-quick="${esc(e.id)}" data-testid="quick-chip" title="${esc(e.name)}">
+      ${esc(String(e.name ?? '').split(',')[0])} <small>${fmt(e.kcal)}</small>
     </button>`).join('');
 }
 
@@ -332,12 +359,13 @@ function renderMealPicker() {
     <button role="radio" aria-checked="${m.id === state.addMeal}" data-meal="${m.id}" data-testid="pick-${m.id}">${m.label}</button>`).join('');
 }
 
-function foodRow(food, extra = '') {
+function foodRow(food, extra = '', { deletable = false } = {}) {
   const tag = food.src === 'off' ? '<span class="tag">ברקוד</span>' : food.src === 'ai' ? '<span class="tag">הערכה</span>'
     : food.id.startsWith('u') ? '<span class="tag">שלי</span>' : '';
   return `<li><button class="row" data-food="${esc(food.id)}" data-testid="result">
     <span class="grow"><span class="name">${esc(food.n)}${tag}</span><span class="sub">${fmt(food.kcal)} קק״ל ל-100 ${baseShort(food)}${extra}</span></span>
-    <span aria-hidden="true">＋</span></button></li>`;
+    <span aria-hidden="true">＋</span></button>${deletable
+      ? `<button class="del" data-del-food="${esc(food.id)}" aria-label="מחיקת ${esc(food.n)}" data-testid="del-food">🗑</button>` : ''}</li>`;
 }
 
 let searchTimer;
@@ -361,7 +389,8 @@ async function renderResults() {
     foods = [...state.myFoods].sort((a, b) => a.n.localeCompare(b.n, 'he'));
     empty.textContent = 'מזונות שתוסיפו או תסרקו יופיעו כאן.';
   }
-  ul.innerHTML = foods.map((f) => foodRow(f)).join('');
+  const deletable = !q && state.addTab === 'mine';
+  ul.innerHTML = foods.map((f) => foodRow(f, '', { deletable })).join('');
   empty.hidden = foods.length > 0;
 }
 
@@ -393,12 +422,12 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
     const opts = [['g', baseWord(f)], ...(f.m || []).map(([c, g]) => [String(c), `${unitLabel(f, c)} (${fmt(g)} ${baseShort(f)})`])];
     return `<div class="confirm-item" data-i="${i}">
       <div class="ci-head">
-        <div class="ci-name">${esc(f.n)}<div class="ci-per">${fmt(f.kcal)} קק״ל · ח ${f.p} · פ ${f.c} · ש ${f.f} (ל-100 ${baseShort(f)})</div>${r.note ? `<div class="ci-note" data-testid="item-note">${esc(r.note)}</div>` : ''}</div>
+        <div class="ci-name">${esc(f.n)}<div class="ci-per">${fmt(f.kcal)} קק״ל · ח ${fmt1(f.p)} · פ ${fmt1(f.c)} · ש ${fmt1(f.f)} (ל-100 ${baseShort(f)})</div>${r.note ? `<div class="ci-note" data-testid="item-note">${esc(r.note)}</div>` : ''}</div>
         <button type="button" class="star" data-star="${esc(f.id)}" aria-pressed="${state.favIds.has(f.id)}" aria-label="מועדף" data-testid="star">★</button>
       </div>
       <div class="ci-amount">
-        <input type="number" inputmode="decimal" min="0" step="any" value="${r.amount}" data-amount data-testid="amount" aria-label="כמות">
-        <select data-unit data-testid="unit" aria-label="יחידה">${opts.map(([v, l]) => `<option value="${v}" ${v === String(r.unit) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+        <input type="number" inputmode="decimal" min="0" step="any" value="${esc(r.amount)}" data-amount data-testid="amount" aria-label="כמות">
+        <select data-unit data-testid="unit" aria-label="יחידה">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === String(r.unit) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
       </div>
       <div class="ci-kcal" data-kcal data-testid="item-kcal"></div>
     </div>`;
@@ -435,13 +464,28 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
 
   return new Promise((resolve) => {
     sheet.onclose = async () => {
-      if (sheet.returnValue !== 'save') return resolve(null);
+      if (sheet.returnValue !== 'save') {
+        // a star toggled before cancelling still changed favourites / my foods: show it
+        await refreshMyFoods();
+        if (state.view === 'add') renderResults();
+        return resolve(null);
+      }
       compute();
       const mealId = $('#confirm-meal').value;
       const ids = [];
+      // editing an amount down to 0 means "remove it", with undo, rather than silently doing nothing
+      if (editId && rows.every((r) => r.grams <= 0)) {
+        const prev = await db.log.get(editId);
+        if (prev) {
+          await remove('entries', editId);
+          toast('הפריט נמחק', async () => { await put('entries', prev); renderToday(); });
+        }
+        renderToday();
+        return resolve([]);
+      }
       for (const r of rows) {
         if (r.grams <= 0) continue;
-        if (!r.food.id.startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
+        if (!String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
         const entry = {
           date: state.date, meal: mealId, foodId: r.food.id, name: r.food.n,
           amount: r.amount, unit: r.unit, grams: r.grams, ...r.n, ts: Date.now(),
@@ -670,7 +714,9 @@ function closePhoto() {
 
 // ---------- barcode ----------
 
+// scanGen: bumped on every stop, so a camera start that finishes after the sheet closed is undone
 let scanner = null;
+let scanGen = 0;
 async function openScanner() {
   const sheet = $('#scan-sheet');
   $('#barcode-input').value = '';
@@ -680,25 +726,33 @@ async function openScanner() {
     $('#scan-status').textContent = 'אין גישה למצלמה. אפשר להקליד את מספר הברקוד.';
     return;
   }
+  const gen = ++scanGen;
+  let instance;
   try {
     const F = window.Html5QrcodeSupportedFormats;
-    scanner = new window.Html5Qrcode('scanner', {
+    instance = new window.Html5Qrcode('scanner', {
       formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128],
       experimentalFeatures: { useBarCodeDetectorIfSupported: true },
       verbose: false,
     });
-    await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 260, height: 140 } },
-      (code) => { stopScanner(); handleBarcode(code); }, () => {});
+    await instance.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 260, height: 140 } },
+      (code) => { if (gen === scanGen) { stopScanner(); handleBarcode(code); } }, () => {});
+    if (gen !== scanGen || !sheet.open) {   // closed (or a code typed) while the camera was starting
+      try { await instance.stop(); instance.clear(); } catch { /* not running */ }
+      return;
+    }
+    scanner = instance;
   } catch {
-    $('#scan-status').textContent = 'המצלמה לא זמינה. אפשר להקליד את מספר הברקוד.';
-    scanner = null;
+    if (gen === scanGen && sheet.open) $('#scan-status').textContent = 'המצלמה לא זמינה. אפשר להקליד את מספר הברקוד.';
   }
 }
 
 async function stopScanner() {
-  if (scanner) {
-    try { await scanner.stop(); scanner.clear(); } catch { /* already stopped */ }
-    scanner = null;
+  scanGen++;
+  const s = scanner;
+  scanner = null;
+  if (s) {
+    try { await s.stop(); s.clear(); } catch { /* already stopped */ }
   }
 }
 
@@ -712,9 +766,10 @@ async function handleBarcode(code) {
   if (!code) return;
   $('#scan-status').textContent = `מחפש ${code}…`;
   let food = state.myFoods.find((f) => f.barcode === code) || null;
+  let offline = false;
   if (!food) {
     try { food = await lookupBarcode(code); }
-    catch { $('#scan-status').textContent = 'אין חיבור למאגר הברקודים. אפשר להזין את המוצר ידנית.'; }
+    catch { offline = true; }
   }
   await closeScanner();
   if (food) {
@@ -722,7 +777,9 @@ async function handleBarcode(code) {
     await refreshMyFoods();
     confirmItems([{ food }]);
   } else {
-    openFoodForm({ barcode: code, hint: 'המוצר לא נמצא במאגר. הזינו את הערכים מהתווית, והוא יישמר אצלכם לפעם הבאה.' });
+    openFoodForm({ barcode: code, hint: offline
+      ? 'אין חיבור למאגר הברקודים כרגע. אפשר להזין את הערכים מהתווית, והמוצר יישמר אצלכם לפעם הבאה.'
+      : 'המוצר לא נמצא במאגר. הזינו את הערכים מהתווית, והוא יישמר אצלכם לפעם הבאה.' });
   }
 }
 
@@ -860,7 +917,7 @@ async function renderHistory() {
   $('#day-list').innerHTML = recentDays.length ? (await Promise.all(recentDays.map(async (d) => {
     const t = sumEntries(await db.log.where('date').equals(d).toArray()).kcal;
     const label = new Date(d + 'T12:00:00').toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'numeric' });
-    return `<li><button class="row" data-goto="${d}"><span class="grow">${label}</span><span class="kcal">${fmt(t)} קק״ל</span></button></li>`;
+    return `<li><button class="row" data-goto="${esc(d)}"><span class="grow">${esc(label)}</span><span class="kcal">${fmt(t)} קק״ל</span></button></li>`;
   }))).join('') : '<li class="muted">אין עדיין ימים קודמים</li>';
 
   await renderWeights();
@@ -877,8 +934,8 @@ async function renderWeights() {
     options: { maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { x: { reverse: true, ticks: { color: c.muted } }, y: { grid: { color: c.line }, ticks: { color: c.muted } } } },
   });
   $('#weight-list').innerHTML = ws.slice(-5).reverse().map((w) => `
-    <li data-testid="weight-row"><span class="grow">${new Date(w.date + 'T12:00:00').toLocaleDateString('he-IL')}</span><span class="kcal">${w.kg} ק״ג</span>
-    <button class="del" data-del-weight="${w.date}" aria-label="מחיקה">🗑</button></li>`).join('');
+    <li data-testid="weight-row"><span class="grow">${new Date(w.date + 'T12:00:00').toLocaleDateString('he-IL')}</span><span class="kcal">${esc(w.kg)} ק״ג</span>
+    <button class="del" data-del-weight="${esc(w.date)}" aria-label="מחיקת שקילה">🗑</button></li>`).join('');
 }
 
 // ---------- settings ----------
@@ -916,9 +973,12 @@ function readProfile() {
 
 function updateCalcPreview() {
   const p = readProfile();
-  $('#calc-result').textContent = p.age && p.height && p.weight
-    ? `היעד המחושב: ${fmt(dailyTarget(p))} קק״ל ליום`
-    : 'מלאו גיל, גובה ומשקל כדי לחשב יעד.';
+  if (!(p.age && p.height && p.weight)) { $('#calc-result').textContent = 'מלאו גיל, גובה ומשקל כדי לחשב יעד.'; return; }
+  const t = targetInfo(p);
+  const note = t.clamped === 'low'
+    ? ` (החישוב יצא ${fmt(t.raw)}; זה המינימום המומלץ בלי ליווי רפואי)`
+    : t.clamped === 'high' ? ` (החישוב יצא ${fmt(t.raw)}; כדאי לבדוק את הנתונים)` : '';
+  $('#calc-result').textContent = `היעד המחושב: ${fmt(t.target)} קק״ל ליום${note}`;
 }
 
 async function saveTarget(ev) {
@@ -950,7 +1010,7 @@ async function exportBackup() {
 async function importBackup(file) {
   try {
     const data = parseBackup(await file.text());
-    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הנתונים הנוכחיים יוחלפו.`)) return;
+    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הנתונים בטלפון הזה יוחלפו, וכשהסנכרון פעיל גם במכשירים המחוברים (שינויים שנעשו אחרי הגיבוי נשמרים).`)) return;
     await restoreAll(data);
     await refreshMyFoods();
     await loadTarget();
@@ -966,7 +1026,10 @@ async function importBackup(file) {
 function bind() {
   $('.bottomnav').addEventListener('click', (e) => {
     const b = e.target.closest('[data-view]');
-    if (b) show(b.dataset.view);
+    if (!b) return;
+    // "add" from the bottom bar suggests the meal for now; a meal card's "+" picks its own meal
+    if (b.dataset.view === 'add' && state.date === isoDate()) state.addMeal = mealForHour(new Date().getHours());
+    show(b.dataset.view);
   });
   $('#day-prev').onclick = () => setDate(addDays(state.date, -1));
   $('#day-next').onclick = () => { if (state.date < isoDate()) setDate(addDays(state.date, 1)); };
@@ -979,13 +1042,20 @@ function bind() {
     if (add) { state.addMeal = add.dataset.addMeal; show('add'); $('#search').focus(); }
     else if (del) {
       const entry = await db.log.get(del.dataset.del);
+      if (!entry) { renderToday(); return; }   // already removed (e.g. by a sync from another phone)
       await remove('entries', entry.id);
       renderToday();
       toast('הפריט נמחק', async () => { await put('entries', entry); renderToday(); });
     } else if (edit) {
       const entry = await db.log.get(edit.dataset.edit);
-      const food = state.byId.get(entry.foodId);
-      if (food) confirmItems([{ food, amount: entry.amount, unit: entry.unit, grams: entry.grams }], { meal: entry.meal, editId: entry.id });
+      if (!entry) { renderToday(); return; }
+      // a food this phone does not know (synced from another phone, or removed): rebuild it from the
+      // entry's own values, so the entry can still be edited in grams
+      const per100 = (v) => (entry.grams > 0 ? Math.round(((Number(v) || 0) / entry.grams) * 1000) / 10 : 0);
+      const food = state.byId.get(entry.foodId) || {
+        id: entry.foodId, n: String(entry.name ?? ''), kcal: per100(entry.kcal), p: per100(entry.p), c: per100(entry.c), f: per100(entry.f), m: [],
+      };
+      confirmItems([{ food, amount: entry.amount ?? entry.grams, unit: entry.unit, grams: entry.grams }], { meal: entry.meal, editId: entry.id });
     }
   });
   $('#quick').addEventListener('click', (e) => {
@@ -1005,7 +1075,20 @@ function bind() {
     for (const t of $$('#add-tabs button')) t.setAttribute('aria-selected', String(t === b));
     renderResults();
   });
-  $('#results').addEventListener('click', (e) => {
+  $('#results').addEventListener('click', async (e) => {
+    const del = e.target.closest('[data-del-food]');
+    if (del) {
+      // diary entries keep their own numbers, so removing a saved food never changes the diary
+      const id = del.dataset.delFood;
+      const food = state.myFoods.find((f) => f.id === id);
+      const wasFav = state.favIds.has(id);
+      await remove('myFoods', id);
+      if (wasFav) await remove('favorites', id);
+      await refreshMyFoods();
+      renderResults();
+      if (food) toast('המזון נמחק', async () => { await put('myFoods', food); if (wasFav) await put('favorites', { foodId: id }); await refreshMyFoods(); renderResults(); });
+      return;
+    }
     const b = e.target.closest('[data-food]');
     const food = b && state.byId.get(b.dataset.food);
     if (food) confirmItems([{ food }]);
@@ -1037,6 +1120,10 @@ function bind() {
   $('#open-scan').onclick = openScanner;
   $('#scan-close').onclick = closeScanner;
   $('#scan-sheet').addEventListener('cancel', (e) => { e.preventDefault(); closeScanner(); });
+  // however the sheet closes (back gesture without a cancel event included), the camera goes off
+  $('#scan-sheet').addEventListener('close', () => { stopScanner(); });
+  // ✕ is a plain button, so Enter in the amount field submits with "save", not with ✕
+  $('#confirm-close').onclick = () => $('#confirm-sheet').close('cancel');
   $('#barcode-form').onsubmit = (e) => { e.preventDefault(); handleBarcode($('#barcode-input').value); };
   $('#open-new-food').onclick = () => openFoodForm({ name: $('#search').value.trim() });
   $('#food-close').onclick = () => $('#food-sheet').close();
@@ -1068,12 +1155,22 @@ function bind() {
     if (!(kg > 0)) return;
     await put('weights', { date: isoDate(), kg });
     $('#weight-input').value = '';
+    // the calculated target follows the latest weight
+    const profile = await getSetting('profile', null);
+    if (profile && profile.weight !== kg) {
+      await setSetting('profile', { ...profile, weight: kg });
+      await loadTarget();
+    }
     toast(`נשמר: ${kg} ק״ג`);
     renderWeights();
   };
   $('#weight-list').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-del-weight]');
-    if (b) { await remove('weights', b.dataset.delWeight); renderWeights(); }
+    if (!b) return;
+    const prev = await db.weights.get(b.dataset.delWeight);
+    await remove('weights', b.dataset.delWeight);
+    renderWeights();
+    if (prev) toast('השקילה נמחקה', async () => { await put('weights', prev); renderWeights(); });
   });
 
   $('#target-mode').addEventListener('click', (e) => {
@@ -1110,6 +1207,7 @@ function bind() {
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') { updater.onHidden(); return; }
+    if (rollDay()) { renderDate(); if (state.view === 'add') renderMealPicker(); }
     // back from the camera or picker: the change event (if any) fires right after this
     if (photo.picking) setTimeout(() => { photo.picking = false; }, 3000);
     // the system may stop the camera while the app is in the background: start it again
@@ -1135,6 +1233,10 @@ async function start() {
   } catch { /* never block startup */ }
 
   bind();
+  // ask the browser not to clear this app's data under storage pressure (it holds the only copy
+  // when sync is off)
+  try { navigator.storage?.persist?.().catch(() => {}); } catch { /* not supported */ }
+  window.addEventListener('popstate', (e) => show(e.state?.view || 'today', { fromHistory: true }));
   await Promise.all([loadFoods(), loadTarget()]);
   document.body.dataset.ready = '1';
   show('today');
