@@ -16,7 +16,8 @@ export const APP_VERSION = '1.10.0';
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = (n) => Math.round(n).toLocaleString('he-IL');
+const fmt = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n)) : 0).toLocaleString('he-IL');
+const fmt1 = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n) * 10) / 10 : 0);
 
 const state = {
   date: isoDate(),
@@ -293,11 +294,11 @@ async function renderToday() {
       </div>
       ${list.length ? `<ul class="list compact">${list.map((e) => `
         <li data-testid="entry">
-          <button class="row grow" data-edit="${e.id}">
+          <button class="row grow" data-edit="${esc(e.id)}">
             <span class="grow"><span class="name">${esc(e.name)}</span><span class="sub">${esc(amountText(e))}</span></span>
             <span class="kcal">${fmt(e.kcal)}</span>
           </button>
-          <button class="del" data-del="${e.id}" aria-label="מחיקה">🗑</button>
+          <button class="del" data-del="${esc(e.id)}" aria-label="מחיקת ${esc(e.name)}">🗑</button>
         </li>`).join('')}</ul>` : ''}
     </div>`;
   }).join('');
@@ -309,8 +310,8 @@ async function renderQuick() {
   const recent = await recentFoods(10);
   $('#quick-card').hidden = recent.length === 0;
   $('#quick').innerHTML = recent.map((e) => `
-    <button class="chip" data-quick="${e.id}" data-testid="quick-chip" title="${esc(e.name)}">
-      ${esc(e.name.split(',')[0])} <small>${fmt(e.kcal)}</small>
+    <button class="chip" data-quick="${esc(e.id)}" data-testid="quick-chip" title="${esc(e.name)}">
+      ${esc(String(e.name ?? '').split(',')[0])} <small>${fmt(e.kcal)}</small>
     </button>`).join('');
 }
 
@@ -393,12 +394,12 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
     const opts = [['g', baseWord(f)], ...(f.m || []).map(([c, g]) => [String(c), `${unitLabel(f, c)} (${fmt(g)} ${baseShort(f)})`])];
     return `<div class="confirm-item" data-i="${i}">
       <div class="ci-head">
-        <div class="ci-name">${esc(f.n)}<div class="ci-per">${fmt(f.kcal)} קק״ל · ח ${f.p} · פ ${f.c} · ש ${f.f} (ל-100 ${baseShort(f)})</div>${r.note ? `<div class="ci-note" data-testid="item-note">${esc(r.note)}</div>` : ''}</div>
+        <div class="ci-name">${esc(f.n)}<div class="ci-per">${fmt(f.kcal)} קק״ל · ח ${fmt1(f.p)} · פ ${fmt1(f.c)} · ש ${fmt1(f.f)} (ל-100 ${baseShort(f)})</div>${r.note ? `<div class="ci-note" data-testid="item-note">${esc(r.note)}</div>` : ''}</div>
         <button type="button" class="star" data-star="${esc(f.id)}" aria-pressed="${state.favIds.has(f.id)}" aria-label="מועדף" data-testid="star">★</button>
       </div>
       <div class="ci-amount">
-        <input type="number" inputmode="decimal" min="0" step="any" value="${r.amount}" data-amount data-testid="amount" aria-label="כמות">
-        <select data-unit data-testid="unit" aria-label="יחידה">${opts.map(([v, l]) => `<option value="${v}" ${v === String(r.unit) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+        <input type="number" inputmode="decimal" min="0" step="any" value="${esc(r.amount)}" data-amount data-testid="amount" aria-label="כמות">
+        <select data-unit data-testid="unit" aria-label="יחידה">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === String(r.unit) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
       </div>
       <div class="ci-kcal" data-kcal data-testid="item-kcal"></div>
     </div>`;
@@ -860,7 +861,7 @@ async function renderHistory() {
   $('#day-list').innerHTML = recentDays.length ? (await Promise.all(recentDays.map(async (d) => {
     const t = sumEntries(await db.log.where('date').equals(d).toArray()).kcal;
     const label = new Date(d + 'T12:00:00').toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric', month: 'numeric' });
-    return `<li><button class="row" data-goto="${d}"><span class="grow">${label}</span><span class="kcal">${fmt(t)} קק״ל</span></button></li>`;
+    return `<li><button class="row" data-goto="${esc(d)}"><span class="grow">${esc(label)}</span><span class="kcal">${fmt(t)} קק״ל</span></button></li>`;
   }))).join('') : '<li class="muted">אין עדיין ימים קודמים</li>';
 
   await renderWeights();
@@ -877,8 +878,8 @@ async function renderWeights() {
     options: { maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { x: { reverse: true, ticks: { color: c.muted } }, y: { grid: { color: c.line }, ticks: { color: c.muted } } } },
   });
   $('#weight-list').innerHTML = ws.slice(-5).reverse().map((w) => `
-    <li data-testid="weight-row"><span class="grow">${new Date(w.date + 'T12:00:00').toLocaleDateString('he-IL')}</span><span class="kcal">${w.kg} ק״ג</span>
-    <button class="del" data-del-weight="${w.date}" aria-label="מחיקה">🗑</button></li>`).join('');
+    <li data-testid="weight-row"><span class="grow">${new Date(w.date + 'T12:00:00').toLocaleDateString('he-IL')}</span><span class="kcal">${esc(w.kg)} ק״ג</span>
+    <button class="del" data-del-weight="${esc(w.date)}" aria-label="מחיקת שקילה">🗑</button></li>`).join('');
 }
 
 // ---------- settings ----------

@@ -2,6 +2,9 @@
 <html lang="he" dir="rtl">
 <head>
   <meta charset="utf-8">
+  <!-- Defense in depth: even if some text slipped into the page as markup, it could not run script
+       or send data anywhere but the app's own services. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' https://ihvbbrfwawzhksyifemd.supabase.co https://world.openfoodfacts.org https://api.anthropic.com; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>קלורית</title>
   <meta name="description" content="מעקב קלוריות בעברית עם מאגר המזון הישראלי צמרת">
@@ -264,7 +267,7 @@
         <div id="ff-units"></div>
         <button type="button" class="btn secondary block" id="ff-add-unit" data-testid="ff-add-unit">＋ יחידה אחרת</button>
       </fieldset>
-      <label>ברקוד<input inputmode="numeric" id="ff-barcode" data-testid="ff-barcode"></label>
+      <label>ברקוד<input inputmode="numeric" id="ff-barcode" data-testid="ff-barcode" maxlength="14" pattern="[0-9]{6,14}"></label>
       <button class="btn block" data-testid="ff-save">שמירה והמשך</button>
     </form>
   </dialog>
