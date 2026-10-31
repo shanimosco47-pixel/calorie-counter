@@ -325,3 +325,64 @@ test('audit: disconnecting keeps unsent deletes, so they reach the cloud after r
   await a.sync.connect(code);
   assert.equal(remote.rows.get(`${code}|entries|D`).data, null);
 });
+
+test('restoring an old backup on a syncing device: the cloud\'s newer edits and deletes win (Codex P1)', async () => {
+  const remote = fakeRemote();
+  const a = device(remote);
+  const b = device(remote);
+  const code = generateCode();
+  await a.sync.connect(code);
+  const kept = await a.store.put('entries', entry({ name: 'נערך', kcal: 248 }));
+  const gone = await a.store.put('entries', entry({ name: 'נמחק' }));
+  await a.sync.syncNow();
+  const backup = await a.store.dumpAll();                 // old backup, taken now
+
+  await b.sync.connect(code);
+  await tick();
+  await b.store.put('entries', { ...(await b.db.log.get(kept.id)), kcal: 300 });   // edited elsewhere later
+  await b.store.remove('entries', gone.id);                                         // deleted elsewhere later
+  await b.sync.syncNow();
+  await a.sync.syncNow();
+  for (let i = 0; i < 3; i++) {                          // move the pull cursor well past those changes
+    await b.store.put('weights', { date: `2026-10-2${i}`, kg: 70 + i });
+    await b.sync.syncNow();
+    await a.sync.syncNow();
+  }
+  assert.equal((await a.db.log.get(kept.id)).kcal, 300);
+
+  await a.store.restoreAll(backup);                       // brings back the old versions locally
+  assert.equal((await a.db.log.get(kept.id)).kcal, 248);
+  await a.sync.syncNow();                                 // the server rejects them as stale
+  await a.sync.syncNow();
+  assert.equal((await a.db.log.get(kept.id)).kcal, 300, 'newer cloud edit came back');
+  assert.equal(await a.db.log.get(gone.id), undefined, 'cloud delete came back');
+  assert.equal(await a.db.outbox.count(), 0);
+});
+
+test('undo after a synced delete survives, even when the row came from a phone whose clock is ahead (Codex P2)', async () => {
+  const remote = fakeRemote();
+  const a = device(remote);
+  const code = generateCode();
+  await a.sync.connect(code);
+  // a row written by a phone whose clock is 1000 s ahead
+  const future = Date.now() + 1_000_000;
+  const row = { ...entry({ name: 'מהטלפון השני' }), mt: future };
+  await remote.push(code, [{ kind: 'entries', id: row.id, data: row, ts: future }]);
+  await a.sync.syncNow();
+  const local = await a.db.log.get(row.id);
+  assert.equal(local.mt, future);
+
+  await a.store.remove('entries', row.id);               // delete...
+  await a.sync.syncNow();                                // ...the tombstone syncs and leaves the outbox
+  assert.equal(await a.db.outbox.count(), 0);
+  await a.store.put('entries', local);                   // ...then "undo"
+  await a.sync.syncNow();
+  await a.sync.syncNow();
+  assert.ok(await a.db.log.get(row.id), 'undo is not deleted again by the next pull');
+  const cloud = remote.rows.get(`${code}|entries|${row.id}`);
+  assert.ok(cloud.data, 'the cloud has the restored row, not the tombstone');
+
+  const b = device(remote);                              // and another phone sees it too
+  await b.sync.connect(code);
+  assert.ok(await b.db.log.get(row.id));
+});
