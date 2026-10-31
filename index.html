@@ -226,7 +226,7 @@
   <dialog class="sheet" id="photo-sheet" data-testid="photo-sheet">
     <div>
       <header class="sheet-head"><h2>זיהוי מנה</h2><button type="button" class="icon-btn" id="photo-close" aria-label="סגירה">✕</button></header>
-      <video id="camera" class="camera" data-testid="camera" playsinline muted hidden></video>
+      <video id="camera" class="camera" data-testid="camera" aria-label="תצוגת מצלמה" playsinline muted hidden></video>
       <button type="button" class="btn block" id="shutter" data-testid="shutter" hidden>צלם</button>
       <img id="photo-preview" class="photo-preview" alt="">
       <p class="center" id="photo-status" data-testid="photo-status" role="status"></p>
@@ -238,6 +238,7 @@
           <input type="file" accept="image/*" capture="environment" id="camera-input" data-testid="camera-input" hidden>
         </label>
       </div>
+      <p class="muted center" id="camera-app-note" data-testid="camera-app-note" hidden>באפליקציית המצלמה של הטלפון ייתכן שהתמונה תישמר גם בגלריה.</p>
     </div>
   </dialog>
 

@@ -59,3 +59,74 @@ test('no camera access: offers the phone camera app instead', async ({ page }) =
   await expect(page.getByTestId('camera-app')).toBeVisible();
   await expect(page.getByTestId('camera-input')).toHaveAttribute('capture', 'environment');
 });
+
+// Records every camera stream the page gets, and makes the camera slow to start like a cold phone camera.
+function slowCamera(page, delayMs = 800) {
+  return page.addInitScript((delay) => {
+    const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    window.__streams = [];
+    navigator.mediaDevices.getUserMedia = async (c) => {
+      const s = await real(c);
+      window.__streams.push(s);
+      await new Promise((r) => setTimeout(r, delay));
+      return s;
+    };
+  }, delayMs);
+}
+const liveTracks = (page) => page.evaluate(() => window.__streams.flatMap((s) => s.getTracks()).filter((t) => t.readyState === 'live').length);
+
+test('camera closed while still starting, reopened, closed: no camera left running', async ({ page }) => {
+  await slowCamera(page);
+  await withKey(page);
+  await page.getByTestId('open-camera').click();
+  await page.locator('#photo-close').click();           // close while the camera is starting
+  await page.getByTestId('open-camera').click();
+  await expect(page.getByTestId('shutter')).toBeVisible();
+  await page.locator('#photo-close').click();
+  await page.waitForTimeout(1200);                       // let any late start resolve
+  expect(await liveTracks(page)).toBe(0);
+  await expect(page.getByTestId('photo-sheet')).toBeHidden();
+});
+
+test('gallery pick while the camera is starting: the late camera never shows up', async ({ page }) => {
+  await page.route('https://api.anthropic.com/**', async (route) => { await new Promise((r) => setTimeout(r, 1500)); await route.fulfill({ json: reply }); });
+  await slowCamera(page);
+  await withKey(page);
+  await page.getByTestId('open-camera').click();
+  await page.locator('#photo-close').click();
+  await page.getByTestId('photo-input').setInputFiles({ name: 'meal.png', mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64') });
+  await page.waitForTimeout(1000);
+  await expect(page.getByTestId('shutter')).toBeHidden();
+  await expect(page.getByTestId('photo-status')).toContainText('מזהה');
+  await expect(page.getByTestId('confirm-sheet')).toBeVisible();
+  expect(await liveTracks(page)).toBe(0);
+});
+
+test('sheet closed without a cancel event (Android back gesture): camera off', async ({ page }) => {
+  await slowCamera(page, 0);
+  await withKey(page);
+  await page.getByTestId('open-camera').click();
+  await expect(page.getByTestId('shutter')).toBeVisible();
+  await page.evaluate(() => document.querySelector('#photo-sheet').close());
+  await expect.poll(() => liveTracks(page)).toBe(0);
+});
+
+test('camera stopped by the system: the shutter never sends a frozen frame', async ({ page }) => {
+  let requests = 0;
+  await page.route('https://api.anthropic.com/**', (route) => { requests++; return route.fulfill({ json: reply }); });
+  await slowCamera(page, 0);
+  await withKey(page);
+  await page.getByTestId('open-camera').click();
+  await expect(page.getByTestId('shutter')).toBeVisible();
+  // a track that ends on its own: stop() does not fire "ended", so simulate the system ending it
+  await page.evaluate(() => {
+    const t = document.querySelector('#camera').srcObject.getVideoTracks()[0];
+    t.stop(); t.dispatchEvent(new Event('ended'));
+  });
+  await expect(page.getByTestId('shutter')).toBeVisible();   // restarted with a fresh camera
+  await page.getByTestId('shutter').click();
+  await expect(page.getByTestId('confirm-sheet')).toBeVisible();
+  expect(requests).toBe(1);
+  expect(await liveTracks(page)).toBe(0);
+});
