@@ -61,6 +61,9 @@
       <div class="search-row">
         <input type="search" id="search" data-testid="search" placeholder="חיפוש מזון, למשל: חומוס, פיתה, קוטג׳" autocomplete="off" enterkeyhint="search">
       </div>
+      <label class="btn block file-btn photo-btn" data-testid="open-photo">📸 צילום מנה
+        <input type="file" accept="image/*" id="photo-input" data-testid="photo-input" hidden>
+      </label>
       <div class="action-row">
         <button class="btn secondary" id="open-scan" data-testid="open-scan">📷 סריקת ברקוד</button>
         <button class="btn secondary" id="open-new-food" data-testid="open-new-food">＋ מזון חדש</button>
@@ -170,10 +173,11 @@
       </div>
 
       <details class="card form" id="experimental">
-        <summary>ניסיוני: זיהוי מנות מתמונה (בקרוב)</summary>
-        <p class="muted">בגרסה הבאה: צילום מנה ← זיהוי פריטים וכמויות ← אישור. המפתח נשמר בטלפון בלבד.</p>
+        <summary>זיהוי מנות מתמונה</summary>
+        <p class="muted">בלחיצה על "צילום מנה" במסך ההוספה: מצלמים, Claude מזהה את הפריטים ומעריך כמויות, ואתם מאשרים או מתקנים לפני ששום דבר נכנס ליומן.</p>
+        <p class="muted">המפתח נשמר בטלפון בלבד, לא מסונכרן לענן, ונשלח רק ל-Anthropic יחד עם התמונה. כל זיהוי עולה בערך 1-2 סנט מהחשבון שלכם. מומלץ להגדיר תקרת הוצאה למפתח ב-console.anthropic.com.</p>
         <label>מפתח Claude API<input type="password" id="api-key" data-testid="api-key" autocomplete="off" placeholder="sk-ant-..."></label>
-        <button type="button" class="btn secondary" id="api-key-save">שמירת מפתח</button>
+        <button type="button" class="btn secondary" id="api-key-save" data-testid="api-key-save">שמירת מפתח</button>
       </details>
 
       <div class="card">
@@ -192,7 +196,7 @@
     <button data-view="settings" data-testid="nav-settings"><span>⚙️</span>הגדרות</button>
   </nav>
 
-  <!-- Confirm items: the single entry point for logging food (search, barcode, later photos) -->
+  <!-- Confirm items: the single entry point for logging food (search, barcode, photos) -->
   <dialog class="sheet" id="confirm-sheet" data-testid="confirm-sheet">
     <form method="dialog" id="confirm-form">
       <header class="sheet-head"><h2 id="confirm-title">הוספה ליומן</h2><button class="icon-btn" value="cancel" formnovalidate aria-label="סגירה">✕</button></header>
@@ -212,6 +216,18 @@
         <input type="text" inputmode="numeric" pattern="[0-9]{6,14}" id="barcode-input" data-testid="barcode-input" placeholder="או הקלידו מספר ברקוד" required>
         <button class="btn" data-testid="barcode-go">חיפוש</button>
       </form>
+    </div>
+  </dialog>
+
+  <dialog class="sheet" id="photo-sheet" data-testid="photo-sheet">
+    <div>
+      <header class="sheet-head"><h2>זיהוי מנה</h2><button type="button" class="icon-btn" id="photo-close" aria-label="סגירה">✕</button></header>
+      <img id="photo-preview" class="photo-preview" alt="">
+      <p class="center" id="photo-status" data-testid="photo-status" role="status"></p>
+      <div class="action-row" id="photo-actions" hidden>
+        <button type="button" class="btn" id="photo-retry" data-testid="photo-retry">ניסיון נוסף</button>
+        <button type="button" class="btn secondary" id="photo-settings" data-testid="photo-settings" hidden>להגדרות</button>
+      </div>
     </div>
   </dialog>
 

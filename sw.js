@@ -1,5 +1,5 @@
-// Offline support: app shell and food data are cached; Open Food Facts and Supabase requests always go to the network.
-const VERSION = 'kalorit-app-v1.8.0';
+// Offline support: app shell and food data are cached; Open Food Facts, Supabase and Claude API requests always go to the network.
+const VERSION = 'kalorit-app-v1.9.0';
 const SHELL = [
   './',
   'index.html',
@@ -13,6 +13,7 @@ const SHELL = [
   'lib/remote.js',
   'lib/match.js',
   'lib/off.js',
+  'lib/vision.js',
   'lib/update.js',
   'vendor/dexie.min.js',
   'vendor/chart.umd.js',

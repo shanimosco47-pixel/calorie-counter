@@ -5,8 +5,10 @@ export const test = base.extend({
   page: async ({ page }, use) => {
     const errors = [];
     page.on('console', (m) => {
-      // a 404 from Open Food Facts is the normal "unknown product" answer, not an app error
-      if (m.type() === 'error' && !m.location().url.includes('openfoodfacts.org')) errors.push(m.text());
+      // a 404 from Open Food Facts is the normal "unknown product" answer, and a 401 from the
+      // Claude API a wrong key the app explains: browser network logs, not app errors
+      const url = m.location().url;
+      if (m.type() === 'error' && !url.includes('openfoodfacts.org') && !url.includes('api.anthropic.com')) errors.push(m.text());
     });
     page.on('pageerror', (e) => errors.push(e.message));
     // Open Food Facts is not reachable from CI; answer with fixtures. Real lookups run on the phone.
