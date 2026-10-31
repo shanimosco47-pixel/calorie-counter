@@ -628,11 +628,12 @@ async function analyzeMeal(source) {
     if (ctrl.signal.aborted) return;
     if (!recognized.length) throw new VisionError('empty', 'no food');
     const items = recognized.map((it, i) => {
-      // candidates from every search term Claude gave, best-ranked first, without duplicates
-      const seen = new Set();
-      const candidates = it.queries.flatMap((q) => matchFood(q, state.index, { limit: 8, boostIds: state.favIds }))
-        .filter((f) => !seen.has(f.id) && seen.add(f.id));
-      const { food, estimated } = pickFood(it, candidates, { makeId: () => 'a' + Date.now().toString(36) + i });
+      // the primary search term, then each alternative term Claude gave (8 results each, no duplicates)
+      const search = (q) => matchFood(q, state.index, { limit: 8, boostIds: state.favIds });
+      const candidates = search(it.queries[0] || it.name);
+      const seen = new Set(candidates.map((f) => f.id));
+      const alternatives = it.queries.slice(1).flatMap(search).filter((f) => !seen.has(f.id) && seen.add(f.id));
+      const { food, estimated } = pickFood(it, candidates, { alternatives, makeId: () => 'a' + Date.now().toString(36) + i });
       const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
         : (it.name !== food.n ? `זוהה: ${it.name}` : '');
       return { food, ...amountFor(it, food, unitLabel), note };

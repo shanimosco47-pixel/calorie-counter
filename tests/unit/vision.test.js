@@ -67,17 +67,26 @@ test('analyzePhoto: headers, key handling and HTTP errors', async () => {
   await assert.rejects(analyzePhoto({ apiKey: 'k', imageBase64: 'x', fetchImpl: async () => { throw new TypeError('Failed to fetch'); } }), (e) => e.code === 'network');
 });
 
-test('counted foods: unit kept, weight follows the count, alternative search terms', async () => {
+test('counted foods: unit kept, Claude\'s total weight kept, alternative search terms', async () => {
   const { amountFor } = await import('../../lib/vision.js');
   const eggs = parseResponse(reply([{ ...item, name: 'ביצים מקושקשות', query: 'ביצים מקושקשות', alt_queries: ['חביתה', 'חביתה', ''],
-    grams: 170, unit_name: 'ביצה', unit_count: 3, unit_grams: 50, kcal_per_100g: 160 }]))[0];
-  assert.deepEqual(eggs.unit, { name: 'ביצה', count: 3, grams: 50 });
-  assert.equal(eggs.grams, 150);                                   // 3 x 50, not the separate 170 guess
+    grams: 150, unit_name: 'ביצה', unit_count: 3, unit_grams: 50, kcal_per_100g: 160 }]))[0];
+  assert.deepEqual(eggs.unit, { name: 'ביצה', count: 3 });
+  assert.equal(eggs.grams, 150);
   assert.deepEqual(eggs.queries, ['ביצים מקושקשות', 'חביתה']);
   // no unit: empty name or zero count means "not counted"
   assert.equal(parseResponse(reply([{ ...item, unit_name: 'כוס', unit_count: 0, unit_grams: 240 }]))[0].unit, null);
+  // shakshuka "2 eggs" keeps its real total, not 2 x 50 g
+  assert.equal(parseResponse(reply([{ ...item, grams: 350, unit_name: 'ביצה', unit_count: 2, unit_grams: 50 }]))[0].grams, 350);
+  // tiny units are not rounded away: 60 raisins of 0.5 g, 50 sweetener drops of 0.1 g
+  assert.equal(parseResponse(reply([{ ...item, grams: 0, unit_name: 'צימוק', unit_count: 60, unit_grams: 0.5 }]))[0].grams, 30);
+  assert.equal(parseResponse(reply([{ ...item, grams: 5, unit_name: 'טיפה', unit_count: 50, unit_grams: 0.1 }]))[0].grams, 5);
+  // absurd numbers are capped
+  const huge = parseResponse(reply([{ ...item, grams: 1e9, unit_name: 'x', unit_count: 1e6, unit_grams: 1 }]))[0];
+  assert.equal(huge.grams, 5000);
+  assert.equal(huge.unit.count, 100);
 
-  // not in the database: the estimate gets the unit, and opens as 3 eggs
+  // not in the database: the estimate gets the unit (total / count), and opens as 3 eggs
   const est = pickFood(eggs, [], { makeId: () => 'aE' });
   assert.deepEqual(est.food.m, [['u1', 50, 'ביצה']]);
   const label = (f, code) => (f.m.find(([c]) => c === code) || [])[2] || '';
@@ -87,3 +96,27 @@ test('counted foods: unit kept, weight follows the count, alternative search ter
   assert.deepEqual(amountFor(eggs, omelette, label), { amount: 3, unit: 'egg' });
   assert.deepEqual(amountFor(eggs, { id: 't8', n: 'x', kcal: 160, m: [] }, label), { amount: 150, unit: 'g' });
 });
+
+test('amountFor on real Tzameret data: closest size wins, implausible sizes fall back to grams', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { amountFor } = await import('../../lib/vision.js');
+  const data = JSON.parse(readFileSync(new URL('../../data/tzameret.json', import.meta.url)));
+  const foods = Array.isArray(data) ? data : data.foods;
+  const units = data.units || {};
+  const labelOf = (f, code) => { const m = f.m.find(([c]) => String(c) === String(code)); return (m && m[2]) || units[String(code).replace(/^b/, '')] || ''; };
+  const find = (re) => foods.find((f) => re.test(f.n));
+  const counted = (name, count, grams) => ({ unit: { name, count }, grams });
+
+  // a toasted baguette's "פרוסה" is 5.5 g: two 30 g slices must not open as 11 g
+  const baguette = find(/^לחם בגט, קלוי/);
+  assert.ok(baguette, 'baguette in data');
+  assert.equal(amountFor(counted('פרוסה', 2, 60), baguette, labelOf).unit, 'g');
+  // boiled eggs have only "יחידה" sizes: 2 eggs (~100 g) pick the closest one
+  const boiled = find(/^ביצה קשה שלמה/);
+  const r = amountFor(counted('ביצה', 2, 100), boiled, labelOf);
+  assert.equal(r.amount, 2);
+  assert.match(r.unit, /^b?10[0-5]$/);
+  const g = boiled.m.find(([c]) => String(c) === r.unit)[1];
+  for (const [c, other] of boiled.m) if (/^b?10[0-5]$/.test(String(c))) assert.ok(Math.abs(2 * g - 100) <= Math.abs(2 * other - 100));
+});
+
