@@ -110,4 +110,6 @@ test('user units: the first one is the default; liquids without units start at 1
   const shake = { kcal: 80, liquid: true, m: [['u1', 240, 'כוס'], ['u2', 350, 'מנה']] };
   assert.deepEqual(defaultAmount(shake), { amount: 1, unit: 'u1' });
   assert.deepEqual(defaultAmount({ kcal: 80, liquid: true, m: [] }), { amount: 100, unit: 'g' });
+  // a small unit the user chose is still the default (no "too small to count" penalty)
+  assert.deepEqual(defaultAmount({ kcal: 387, m: [['u1', 5, 'כפית']] }), { amount: 1, unit: 'u1' });
 });

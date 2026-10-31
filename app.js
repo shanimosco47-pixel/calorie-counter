@@ -722,10 +722,11 @@ async function handleBarcode(code) {
 
 // ---------- new food form ----------
 
-// Quick unit presets for the new-food form. A size is suggested only where it is a standard measure;
-// "slice", "piece" and "serving" depend on the food, so the user writes their weight.
+// Quick unit presets for the new-food form. A size is suggested only for liquids, where a cup is
+// 240 ml whatever the drink. For solids every size depends on the food (a cup of flour is ~120 g,
+// of rice ~190 g), so the user writes the weight and the app never invents a portion.
 const UNIT_PRESETS = {
-  solid: [['פרוסה'], ['יחידה'], ['מנה'], ['כף', 15], ['כפית', 5], ['כוס', 240]],
+  solid: [['פרוסה'], ['יחידה'], ['מנה'], ['כף'], ['כפית'], ['כוס']],
   liquid: [['כוס', 240], ['פחית', 330], ['בקבוק', 500], ['כף', 15], ['כפית', 5], ['מנה']],
 };
 const ffState = { kind: 'solid' };
@@ -1044,7 +1045,8 @@ function bind() {
     row.querySelector('[data-unit-g]').focus();
   });
   $('#ff-units').addEventListener('click', (e) => { if (e.target.closest('[data-remove]')) e.target.closest('.unit-row').remove(); });
-  $('#ff-units').addEventListener('input', (e) => e.target.setCustomValidity?.(''));
+  // any edit may resolve an error flagged on another row (a renamed duplicate, a row emptied)
+  $('#ff-units').addEventListener('input', () => { for (const i of $$('#ff-units input')) i.setCustomValidity(''); });
 
   $('#range-picker').addEventListener('click', (e) => {
     const b = e.target.closest('[data-range]');

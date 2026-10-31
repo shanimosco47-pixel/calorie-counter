@@ -328,6 +328,34 @@ test('new liquid food with several units: shown in ml, every unit selectable', a
   await expect(page.getByTestId('eaten')).toHaveText('280');
 });
 
+test('new solid food: no preset invents a weight; a fixed error no longer blocks saving', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('open-new-food').click();
+  await page.getByTestId('ff-name').fill('גרנולה של הבית');
+  await page.getByTestId('ff-kcal').fill('450');
+  for (const name of ['כוס', 'כף', 'כפית', 'פרוסה']) {
+    await page.getByTestId('unit-preset').filter({ hasText: name }).click();
+  }
+  const rows = page.getByTestId('unit-row');
+  await expect(rows).toHaveCount(4);
+  for (let i = 0; i < 4; i++) await expect(rows.nth(i).getByTestId('unit-g')).toHaveValue('');
+
+  // two rows with the same name: flagged; renaming the OTHER row fixes it
+  await rows.nth(0).getByTestId('unit-g').fill('110');
+  await rows.nth(1).getByTestId('unit-name').fill('כוס');
+  await rows.nth(1).getByTestId('unit-g').fill('100');
+  await rows.nth(2).getByTestId('unit-name').fill('');          // emptied rows are ignored
+  await rows.nth(3).getByTestId('unit-name').fill('');
+  await page.getByTestId('ff-save').click();
+  await expect(page.getByTestId('food-sheet')).toBeVisible();
+  await rows.nth(0).getByTestId('unit-name').fill('כוס גדושה');
+  await page.getByTestId('ff-save').click();
+  await expect(page.getByTestId('confirm-sheet')).toBeVisible();
+  await expect(page.getByTestId('unit').locator('option')).toHaveText(['גרם', 'כוס גדושה (110 ג׳)', 'כוס (100 ג׳)']);
+  await expect(page.getByTestId('confirm-total')).toHaveText('495');
+});
+
 test('past days: navigate back and log to yesterday', async ({ page }) => {
   await open(page);
   await page.locator('#day-prev').click();
