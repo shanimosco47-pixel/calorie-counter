@@ -7,10 +7,11 @@ import {
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
+import { analyzePhoto, pickFood, VisionError, ERROR_TEXT, NO_RETRY } from './lib/vision.js';
 import { BUILD } from './build-info.js';
 import { createUpdater } from './lib/update.js';
 
-export const APP_VERSION = '1.8.0';
+export const APP_VERSION = '1.9.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -118,6 +119,8 @@ const updater = createUpdater({
   cacheExists: async (version) => { try { return await caches.has(`kalorit-app-${version}`); } catch { return false; } },
   isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
     || (state.view === 'add' && $('#search').value.trim() !== ''),
+  // the camera or picker is open over the app, a paid recognition is running, or its items await approval
+  keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming,
   reload: () => location.reload(),
   notify: (event, info) => {
     if (event === 'updated') toast(`האפליקציה עודכנה ✓ ${builtText(info.builtAt)}`);
@@ -325,7 +328,8 @@ function renderMealPicker() {
 }
 
 function foodRow(food, extra = '') {
-  const tag = food.src === 'off' ? '<span class="tag">ברקוד</span>' : food.id.startsWith('u') ? '<span class="tag">שלי</span>' : '';
+  const tag = food.src === 'off' ? '<span class="tag">ברקוד</span>' : food.src === 'ai' ? '<span class="tag">הערכה</span>'
+    : food.id.startsWith('u') ? '<span class="tag">שלי</span>' : '';
   return `<li><button class="row" data-food="${esc(food.id)}" data-testid="result">
     <span class="grow"><span class="name">${esc(food.n)}${tag}</span><span class="sub">${fmt(food.kcal)} קק״ל ל-100 ג׳${extra}</span></span>
     <span aria-hidden="true">＋</span></button></li>`;
@@ -360,7 +364,7 @@ async function renderResults() {
 
 /**
  * Opens the confirmation sheet for one or more foods and saves them to the diary.
- * items: [{ food, amount?, unit? }]. Search, barcode and (later) photo recognition all call this.
+ * items: [{ food, amount?, unit?, note? }]. Search, barcode and photo recognition all call this.
  * Resolves to the saved entry ids, or null when cancelled.
  */
 export function confirmItems(items, { meal = state.addMeal, editId = null } = {}) {
@@ -368,10 +372,11 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
   const box = $('#confirm-items');
   const known = (food, unit) => unit === 'g' || (food.m || []).some(([c]) => String(c) === String(unit));
   const rows = items.map((it) => {
-    if (it.amount == null) return { food: it.food, ...defaultAmount(it.food) };
+    const note = it.note || '';
+    if (it.amount == null) return { food: it.food, note, ...defaultAmount(it.food) };
     // a unit this device's food data lacks (logged on a newer version): edit the same grams
-    if (!known(it.food, it.unit || 'g')) return { food: it.food, amount: it.grams ?? it.amount, unit: 'g' };
-    return { food: it.food, amount: it.amount, unit: it.unit || 'g' };
+    if (!known(it.food, it.unit || 'g')) return { food: it.food, note, amount: it.grams ?? it.amount, unit: 'g' };
+    return { food: it.food, note, amount: it.amount, unit: it.unit || 'g' };
   });
 
   $('#confirm-title').textContent = editId ? 'עריכת פריט' : 'הוספה ליומן';
@@ -383,7 +388,7 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
     const opts = [['g', 'גרם'], ...(f.m || []).map(([c, g]) => [String(c), `${unitLabel(f, c)} (${fmt(g)} ג׳)`])];
     return `<div class="confirm-item" data-i="${i}">
       <div class="ci-head">
-        <div class="ci-name">${esc(f.n)}<div class="ci-per">${fmt(f.kcal)} קק״ל · ח ${f.p} · פ ${f.c} · ש ${f.f} (ל-100 ג׳)</div></div>
+        <div class="ci-name">${esc(f.n)}<div class="ci-per">${fmt(f.kcal)} קק״ל · ח ${f.p} · פ ${f.c} · ש ${f.f} (ל-100 ג׳)</div>${r.note ? `<div class="ci-note" data-testid="item-note">${esc(r.note)}</div>` : ''}</div>
         <button type="button" class="star" data-star="${esc(f.id)}" aria-pressed="${state.favIds.has(f.id)}" aria-label="מועדף" data-testid="star">★</button>
       </div>
       <div class="ci-amount">
@@ -455,7 +460,80 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
     sheet.showModal();
   });
 }
-window.confirmItems = confirmItems;   // used by tests and by round-2 photo recognition
+window.confirmItems = confirmItems;   // used by tests
+
+// ---------- meal photo ----------
+
+// Downscales the photo before upload: Claude reads food fine at ~1.5 MP, and phone photos are 10+ MB.
+async function photoToJpeg(file, maxSide = 1568) {
+  let bmp;
+  try { bmp = await createImageBitmap(file); }
+  catch (e) { throw new VisionError('bad_image', String(e?.message || e)); }   // HEIC, or too large for memory
+  const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bmp.width * scale));
+  canvas.height = Math.max(1, Math.round(bmp.height * scale));
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  bmp.close?.();
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  return { dataUrl, base64: dataUrl.slice(dataUrl.indexOf(',') + 1) };
+}
+
+// picking: camera/picker open; ctrl: request in flight; confirming: recognized items awaiting approval
+const photo = { file: null, ctrl: null, picking: false, confirming: false };
+
+async function analyzeMeal(file) {
+  const sheet = $('#photo-sheet');
+  const status = $('#photo-status');
+  photo.file = file;
+  photo.ctrl?.abort();
+  const ctrl = photo.ctrl = new AbortController();
+  $('#photo-actions').hidden = true;
+  $('#photo-settings').hidden = true;
+  $('#photo-detail').hidden = true;
+  status.textContent = 'מזהה את המנה…';
+  if (!sheet.open) sheet.showModal();
+  try {
+    const apiKey = await getSetting('apiKey', '');
+    if (!apiKey) throw new VisionError('no_key', 'no key');
+    const img = await photoToJpeg(file);
+    if (ctrl.signal.aborted) return;
+    $('#photo-preview').src = img.dataUrl;
+    const recognized = await analyzePhoto({ apiKey, imageBase64: img.base64, mediaType: 'image/jpeg', signal: ctrl.signal });
+    if (ctrl.signal.aborted) return;
+    if (!recognized.length) throw new VisionError('empty', 'no food');
+    const items = recognized.map((it, i) => {
+      const { food, estimated } = pickFood(it, matchFood(it.query, state.index, { limit: 8, boostIds: state.favIds }),
+        { makeId: () => 'a' + Date.now().toString(36) + i });
+      const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
+        : (it.name !== food.n ? `זוהה: ${it.name}` : '');
+      return { food, amount: it.grams, unit: 'g', note };
+    });
+    photo.ctrl = null;
+    sheet.close();
+    photo.confirming = true;
+    confirmItems(items).finally(() => { photo.confirming = false; });
+  } catch (e) {
+    if (ctrl.signal.aborted || e?.code === 'cancelled') return;
+    photo.ctrl = null;
+    const code = e instanceof VisionError ? e.code : 'api';
+    console.warn('photo recognition failed', code, e?.message || e);
+    status.textContent = ERROR_TEXT[code] || ERROR_TEXT.api;
+    const detail = e?.detail || (code === 'api' ? String(e?.message || '') : '');
+    $('#photo-detail').textContent = detail;
+    $('#photo-detail').hidden = !detail;
+    $('#photo-actions').hidden = false;
+    $('#photo-retry').hidden = NO_RETRY.has(code);
+    $('#photo-settings').hidden = !(code === 'no_key' || code === 'auth');
+  }
+}
+
+function closePhoto() {
+  photo.ctrl?.abort();
+  photo.ctrl = null;
+  $('#photo-sheet').close();
+  $('#photo-preview').removeAttribute('src');
+}
 
 // ---------- barcode ----------
 
@@ -743,6 +821,13 @@ function bind() {
     if (food) confirmItems([{ food }]);
   });
 
+  $('#photo-input').onclick = () => { photo.picking = true; };
+  $('#photo-input').addEventListener('cancel', () => { photo.picking = false; });
+  $('#photo-input').onchange = (e) => { photo.picking = false; const f = e.target.files[0]; e.target.value = ''; if (f) analyzeMeal(f); };
+  $('#photo-close').onclick = closePhoto;
+  $('#photo-sheet').addEventListener('cancel', (e) => { e.preventDefault(); closePhoto(); });
+  $('#photo-retry').onclick = () => { if (photo.file) analyzeMeal(photo.file); };
+  $('#photo-settings').onclick = () => { closePhoto(); show('settings'); $('#experimental').open = true; $('#api-key').focus(); };
   $('#open-scan').onclick = openScanner;
   $('#scan-close').onclick = closeScanner;
   $('#scan-sheet').addEventListener('cancel', (e) => { e.preventDefault(); closeScanner(); });
@@ -807,6 +892,8 @@ function bind() {
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') { updater.onHidden(); return; }
+    // back from the camera or picker: the change event (if any) fires right after this
+    if (photo.picking) setTimeout(() => { photo.picking = false; }, 3000);
     if (state.view === 'today') renderToday();
     sync.syncNow();
     updater.check();

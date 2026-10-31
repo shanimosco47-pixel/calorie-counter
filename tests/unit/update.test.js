@@ -36,6 +36,7 @@ function setup(opts = {}) {
     fetchLatest: async () => (opts.latest === undefined ? { version: 'B', builtAt: '2026-10-30T20:00:00Z' } : opts.latest),
     serviceWorker: opts.sw === undefined ? fakeServiceWorker() : opts.sw,
     isBusy: opts.isBusy || (() => false),
+    keepAlive: opts.keepAlive || (() => false),
     reload: () => { reloads++; },
     notify: (e) => events.push(e),
     storage,
@@ -93,6 +94,17 @@ test('busy (dialog open, save in flight): deferred until the app is hidden', asy
   t.u.onHidden();
   assert.equal(t.reloads(), 1);
   busy = false;
+});
+
+test('keepAlive (camera open, paid request running): no reload even in the background', async () => {
+  let alive = true;
+  const t = setup({ keepAlive: () => alive });
+  assert.equal(await t.u.check(), 'deferred');
+  t.u.onHidden();                       // camera app in front: the page must survive
+  assert.equal(t.reloads(), 0);
+  alive = false;
+  t.u.onHidden();                       // the next trip to the background applies it
+  assert.equal(t.reloads(), 1);
 });
 
 test('success is announced only when the new build is really running', async () => {

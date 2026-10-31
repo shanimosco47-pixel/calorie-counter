@@ -210,13 +210,85 @@ test('settings: export a backup and import it back', async ({ page }, info) => {
   await expect(page.getByTestId('eaten')).toHaveText(eaten);
 });
 
-test('round-2 ready: hidden API key field, confirmItems is exposed', async ({ page }) => {
-  await open(page);
+// 1x1 PNG: enough for createImageBitmap + canvas; Claude itself is mocked
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+const photoFile = { name: 'meal.png', mimeType: 'image/png', buffer: PNG };
+
+async function saveApiKey(page, key) {
   await page.getByTestId('nav-settings').click();
   await expect(page.getByTestId('api-key')).toBeHidden();
   await page.locator('#experimental summary').click();
-  await expect(page.getByTestId('api-key')).toBeVisible();
   await expect(page.getByTestId('api-key')).toHaveAttribute('type', 'password');
+  await page.getByTestId('api-key').fill(key);
+  await page.getByTestId('api-key-save').click();
+}
+
+test('meal photo: recognized items open the confirm sheet, matched or estimated', async ({ page }) => {
+  let request;
+  await page.route('https://api.anthropic.com/**', async (route) => {
+    request = { headers: route.request().headers(), body: route.request().postDataJSON() };
+    const items = [
+      { name: 'אורז לבן', query: 'אורז לבן מבושל', grams: 150, kcal_per_100g: 130, protein_per_100g: 2.7, carbs_per_100g: 28, fat_per_100g: 0.3 },
+      { name: 'עוגת פרג של סבתא', query: 'עוגת פרג של סבתא', grams: 80, kcal_per_100g: 400, protein_per_100g: 7, carbs_per_100g: 50, fat_per_100g: 18 },
+    ];
+    await route.fulfill({ json: { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ items }) }] } });
+  });
+  await open(page);
+  await saveApiKey(page, 'sk-ant-test');
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('photo-input').setInputFiles(photoFile);
+
+  await expect(page.getByTestId('confirm-sheet')).toBeVisible();
+  expect(request.headers['x-api-key']).toBe('sk-ant-test');
+  expect(request.body.messages[0].content[0].source.media_type).toBe('image/jpeg');
+  const rows = page.locator('#confirm-items .confirm-item');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0).locator('.ci-name')).toContainText('אורז לבן מבושל');
+  await expect(rows.nth(0).getByTestId('amount')).toHaveValue('150');
+  await expect(rows.nth(1).getByTestId('item-note')).toContainText('ערכים משוערים');
+  await expect(page.getByTestId('confirm-total')).toHaveText(String(Math.round(150 * 1.45 + 80 * 4)));
+  await page.getByTestId('confirm-save').click();
+  await page.getByTestId('nav-today').click();
+  await expect(page.getByTestId('eaten')).toHaveText(String(Math.round(150 * 1.45 + 80 * 4)));
+});
+
+test('meal photo: without a key, explains and links to settings; a bad key says so', async ({ page }) => {
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ status: 401, json: { error: { message: 'invalid x-api-key' } } }));
+  await open(page);
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('photo-input').setInputFiles(photoFile);
+  await expect(page.getByTestId('photo-status')).toContainText('צריך מפתח Claude API');
+  await page.getByTestId('photo-settings').click();
+  await expect(page.getByTestId('api-key')).toBeVisible();
+
+  await page.getByTestId('api-key').fill('sk-ant-wrong');
+  await page.getByTestId('api-key-save').click();
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('photo-input').setInputFiles(photoFile);
+  await expect(page.getByTestId('photo-status')).toContainText('המפתח לא התקבל');
+  await expect(page.getByTestId('photo-retry')).toBeHidden();
+});
+
+test('meal photo: rejected request shows the reason; unreadable image says so', async ({ page }) => {
+  let reply = { status: 400, json: { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } } };
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill(reply));
+  await open(page);
+  await saveApiKey(page, 'sk-ant-test');
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('photo-input').setInputFiles(photoFile);
+  await expect(page.getByTestId('photo-status')).toContainText('אין יתרה');
+  await expect(page.getByTestId('photo-detail')).toContainText('credit balance is too low');
+  await expect(page.getByTestId('photo-retry')).toBeHidden();
+  await page.locator('#photo-close').click();
+
+  reply = { status: 400, json: { type: 'error', error: { type: 'invalid_request_error', message: 'fallbacks: unknown field' } } };
+  await page.getByTestId('photo-input').setInputFiles(photoFile);
+  await expect(page.getByTestId('photo-detail')).toHaveText('fallbacks: unknown field');
+  await page.locator('#photo-close').click();
+
+  await page.getByTestId('photo-input').setInputFiles({ name: 'meal.heic', mimeType: 'image/heic', buffer: Buffer.from('not an image') });
+  await expect(page.getByTestId('photo-status')).toContainText('HEIC');
+  await expect(page.getByTestId('photo-retry')).toBeHidden();
   expect(await page.evaluate(() => typeof window.confirmItems)).toBe('function');
 });
 
