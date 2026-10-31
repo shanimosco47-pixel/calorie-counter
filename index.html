@@ -8,8 +8,8 @@
   <meta name="theme-color" content="#0f766e" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#134e4a" media="(prefers-color-scheme: dark)">
   <link rel="manifest" href="kalorit.webmanifest">
-  <link rel="icon" href="icons/icon-192.png">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="icon" href="icons/food-192.png">
+  <link rel="apple-touch-icon" href="icons/food-192.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -247,14 +247,23 @@
       <header class="sheet-head"><h2 id="food-form-title">מזון חדש</h2><button type="button" class="icon-btn" id="food-close" aria-label="סגירה">✕</button></header>
       <p class="muted" id="food-form-hint">הערכים מופיעים על גב האריזה, בטבלה "ל-100 גרם".</p>
       <label>שם<input id="ff-name" data-testid="ff-name" required maxlength="120"></label>
+      <div class="segmented ff-kind" id="ff-kind" role="group" aria-label="סוג המזון">
+        <button type="button" data-kind="solid" aria-pressed="true" data-testid="ff-solid">מוצק (גרם)</button>
+        <button type="button" data-kind="liquid" aria-pressed="false" data-testid="ff-liquid">נוזל (מ״ל)</button>
+      </div>
       <div class="grid2">
-        <label>קלוריות ל-100 גרם<input type="number" inputmode="decimal" step="0.1" min="0" max="900" id="ff-kcal" data-testid="ff-kcal" required></label>
+        <label><span id="ff-kcal-label">קלוריות ל-100 גרם</span><input type="number" inputmode="decimal" step="0.1" min="0" max="900" id="ff-kcal" data-testid="ff-kcal" required></label>
         <label>חלבון (ג׳)<input type="number" inputmode="decimal" step="0.1" min="0" max="100" id="ff-p" data-testid="ff-p"></label>
         <label>פחמימות (ג׳)<input type="number" inputmode="decimal" step="0.1" min="0" max="100" id="ff-c" data-testid="ff-c"></label>
         <label>שומן (ג׳)<input type="number" inputmode="decimal" step="0.1" min="0" max="100" id="ff-f" data-testid="ff-f"></label>
-        <label>יחידה (רשות)<input id="ff-unit" data-testid="ff-unit" placeholder="למשל: פרוסה" maxlength="30"></label>
-        <label>משקל יחידה (ג׳)<input type="number" inputmode="decimal" step="0.1" min="0" id="ff-unit-g" data-testid="ff-unit-g"></label>
       </div>
+      <fieldset class="ff-units">
+        <legend>יחידות מידה (רשות)</legend>
+        <p class="muted" id="ff-units-hint">כדי לרשום למשל "2 פרוסות" בלי לשקול. בוחרים יחידה וכותבים כמה היא שוקלת.</p>
+        <div class="chips wrap" id="ff-unit-chips"></div>
+        <div id="ff-units"></div>
+        <button type="button" class="btn secondary block" id="ff-add-unit" data-testid="ff-add-unit">＋ יחידה אחרת</button>
+      </fieldset>
       <label>ברקוד<input inputmode="numeric" id="ff-barcode" data-testid="ff-barcode"></label>
       <button class="btn block" data-testid="ff-save">שמירה והמשך</button>
     </form>

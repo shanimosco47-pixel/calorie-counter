@@ -87,8 +87,9 @@ test('unknown barcode opens "create product", saved to My Foods', async ({ page 
   await page.getByTestId('ff-name').fill('חטיף אנרגיה של השכונה');
   await page.getByTestId('ff-kcal').fill('400');
   await page.getByTestId('ff-p').fill('10');
-  await page.getByTestId('ff-unit').fill('חטיף');
-  await page.getByTestId('ff-unit-g').fill('30');
+  await page.getByTestId('ff-add-unit').click();
+  await page.getByTestId('unit-name').fill('חטיף');
+  await page.getByTestId('unit-g').fill('30');
   await page.getByTestId('ff-save').click();
   await expect(page.getByTestId('confirm-sheet')).toBeVisible();
   await page.getByTestId('unit').selectOption('u1');
@@ -290,6 +291,41 @@ test('meal photo: rejected request shows the reason; unreadable image says so', 
   await expect(page.getByTestId('photo-status')).toContainText('HEIC');
   await expect(page.getByTestId('photo-retry')).toBeHidden();
   expect(await page.evaluate(() => typeof window.confirmItems)).toBe('function');
+});
+
+test('new liquid food with several units: shown in ml, every unit selectable', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('search').fill('שייק בננה של הבית');
+  await page.getByTestId('open-new-food').click();
+  await expect(page.getByTestId('ff-name')).toHaveValue('שייק בננה של הבית');
+  await page.getByTestId('ff-liquid').click();
+  await expect(page.locator('#ff-kcal-label')).toHaveText('קלוריות ל-100 מ״ל');
+  await page.getByTestId('ff-kcal').fill('80');
+  await page.getByTestId('unit-preset').filter({ hasText: 'כוס' }).click();     // 240 ml suggested
+  await page.getByTestId('unit-preset').filter({ hasText: 'מנה' }).click();     // size left to the user
+  const rows = page.getByTestId('unit-row');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0).getByTestId('unit-g')).toHaveValue('240');
+  await expect(rows.nth(1).getByTestId('unit-g')).toHaveValue('');
+  await expect(rows.nth(1).locator('.unit-suffix')).toHaveText('מ״ל');
+
+  // a unit without a size is not accepted silently
+  await page.getByTestId('ff-save').click();
+  await expect(page.getByTestId('food-sheet')).toBeVisible();
+  await rows.nth(1).getByTestId('unit-g').fill('350');
+  await page.getByTestId('ff-save').click();
+
+  await expect(page.getByTestId('confirm-sheet')).toBeVisible();
+  const unit = page.getByTestId('unit');
+  await expect(unit.locator('option')).toHaveText(['מ״ל', 'כוס (240 מ״ל)', 'מנה (350 מ״ל)']);
+  await expect(unit).toHaveValue('u1');                                        // first unit is the default
+  await expect(page.getByTestId('confirm-total')).toHaveText('192');
+  await unit.selectOption('u2');
+  await expect(page.getByTestId('confirm-total')).toHaveText('280');
+  await expect(page.getByTestId('item-kcal')).toContainText('350 מ״ל');
+  await page.getByTestId('confirm-save').click();
+  await expect(page.getByTestId('eaten')).toHaveText('280');
 });
 
 test('past days: navigate back and log to yesterday', async ({ page }) => {

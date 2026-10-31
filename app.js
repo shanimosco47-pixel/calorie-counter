@@ -11,7 +11,7 @@ import { analyzePhoto, pickFood, VisionError, ERROR_TEXT, NO_RETRY } from './lib
 import { BUILD } from './build-info.js';
 import { createUpdater } from './lib/update.js';
 
-export const APP_VERSION = '1.9.0';
+export const APP_VERSION = '1.10.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -62,8 +62,13 @@ async function loadTarget() {
   else state.target = 2000;
 }
 
+// Liquids are stored in grams like everything else (1 ml counted as 1 g) but shown in ml.
+const isLiquid = (food) => !!food?.liquid;
+const baseWord = (food) => (isLiquid(food) ? 'מ״ל' : 'גרם');
+const baseShort = (food) => (isLiquid(food) ? 'מ״ל' : 'ג׳');
+
 function unitLabel(food, code) {
-  if (code === 'g') return 'גרם';
+  if (code === 'g') return baseWord(food);
   const m = (food.m || []).find(([c]) => String(c) === String(code));
   if (m && m[2]) return m[2];
   if (code === 'serving') return 'מנה (לפי היצרן)';
@@ -72,9 +77,9 @@ function unitLabel(food, code) {
 }
 
 function amountText(e) {
-  if (!e.unit || e.unit === 'g') return `${fmt(e.grams)} גרם`;
   const food = state.byId.get(e.foodId) || { m: [] };
-  return `${e.amount} × ${unitLabel(food, e.unit)} (${fmt(e.grams)} ג׳)`;
+  if (!e.unit || e.unit === 'g') return `${fmt(e.grams)} ${baseWord(food)}`;
+  return `${e.amount} × ${unitLabel(food, e.unit)} (${fmt(e.grams)} ${baseShort(food)})`;
 }
 
 
@@ -331,7 +336,7 @@ function foodRow(food, extra = '') {
   const tag = food.src === 'off' ? '<span class="tag">ברקוד</span>' : food.src === 'ai' ? '<span class="tag">הערכה</span>'
     : food.id.startsWith('u') ? '<span class="tag">שלי</span>' : '';
   return `<li><button class="row" data-food="${esc(food.id)}" data-testid="result">
-    <span class="grow"><span class="name">${esc(food.n)}${tag}</span><span class="sub">${fmt(food.kcal)} קק״ל ל-100 ג׳${extra}</span></span>
+    <span class="grow"><span class="name">${esc(food.n)}${tag}</span><span class="sub">${fmt(food.kcal)} קק״ל ל-100 ${baseShort(food)}${extra}</span></span>
     <span aria-hidden="true">＋</span></button></li>`;
 }
 
@@ -385,10 +390,10 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
 
   box.innerHTML = rows.map((r, i) => {
     const f = r.food;
-    const opts = [['g', 'גרם'], ...(f.m || []).map(([c, g]) => [String(c), `${unitLabel(f, c)} (${fmt(g)} ג׳)`])];
+    const opts = [['g', baseWord(f)], ...(f.m || []).map(([c, g]) => [String(c), `${unitLabel(f, c)} (${fmt(g)} ${baseShort(f)})`])];
     return `<div class="confirm-item" data-i="${i}">
       <div class="ci-head">
-        <div class="ci-name">${esc(f.n)}<div class="ci-per">${fmt(f.kcal)} קק״ל · ח ${f.p} · פ ${f.c} · ש ${f.f} (ל-100 ג׳)</div>${r.note ? `<div class="ci-note" data-testid="item-note">${esc(r.note)}</div>` : ''}</div>
+        <div class="ci-name">${esc(f.n)}<div class="ci-per">${fmt(f.kcal)} קק״ל · ח ${f.p} · פ ${f.c} · ש ${f.f} (ל-100 ${baseShort(f)})</div>${r.note ? `<div class="ci-note" data-testid="item-note">${esc(r.note)}</div>` : ''}</div>
         <button type="button" class="star" data-star="${esc(f.id)}" aria-pressed="${state.favIds.has(f.id)}" aria-label="מועדף" data-testid="star">★</button>
       </div>
       <div class="ci-amount">
@@ -407,7 +412,7 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
       r.unit = el.querySelector('[data-unit]').value;
       r.grams = gramsFor(r.food, r.amount, r.unit);
       r.n = nutrientsFor(r.food, r.grams);
-      el.querySelector('[data-kcal]').textContent = `${fmt(r.grams)} גרם · ${fmt(r.n.kcal)} קק״ל`;
+      el.querySelector('[data-kcal]').textContent = `${fmt(r.grams)} ${baseWord(r.food)} · ${fmt(r.n.kcal)} קק״ל`;
       total += r.n.kcal;
     });
     $('#confirm-total').textContent = fmt(total);
@@ -717,17 +722,74 @@ async function handleBarcode(code) {
 
 // ---------- new food form ----------
 
+// Quick unit presets for the new-food form. A size is suggested only where it is a standard measure;
+// "slice", "piece" and "serving" depend on the food, so the user writes their weight.
+const UNIT_PRESETS = {
+  solid: [['פרוסה'], ['יחידה'], ['מנה'], ['כף', 15], ['כפית', 5], ['כוס', 240]],
+  liquid: [['כוס', 240], ['פחית', 330], ['בקבוק', 500], ['כף', 15], ['כפית', 5], ['מנה']],
+};
+const ffState = { kind: 'solid' };
+
+function setFoodKind(kind) {
+  ffState.kind = kind;
+  for (const b of $$('#ff-kind button')) b.setAttribute('aria-pressed', String(b.dataset.kind === kind));
+  const per = kind === 'liquid' ? 'מ״ל' : 'גרם';
+  $('#ff-kcal-label').textContent = `קלוריות ל-100 ${per}`;
+  if (!ffState.customHint) $('#food-form-hint').textContent = `הערכים מופיעים על גב האריזה, בטבלה "ל-100 ${per}".`;
+  for (const s of $$('#ff-units .unit-suffix')) s.textContent = kind === 'liquid' ? 'מ״ל' : 'גרם';
+  for (const i of $$('#ff-units [data-unit-g]')) i.placeholder = kind === 'liquid' ? 'מ״ל' : 'גרם';
+  $('#ff-unit-chips').innerHTML = UNIT_PRESETS[kind].map(([n, g]) =>
+    `<button type="button" class="chip" data-preset="${esc(n)}" data-g="${g || ''}" data-testid="unit-preset">${esc(n)}${g ? ` <small>${g}</small>` : ''}</button>`).join('');
+}
+
+function addUnitRow(name = '', grams = '') {
+  const per = ffState.kind === 'liquid' ? 'מ״ל' : 'גרם';
+  const row = document.createElement('div');
+  row.className = 'unit-row';
+  row.dataset.testid = 'unit-row';
+  row.innerHTML = `<input data-unit-name data-testid="unit-name" placeholder="שם, למשל: פרוסה" maxlength="30" aria-label="שם היחידה">
+    <input type="number" inputmode="decimal" step="any" min="0" data-unit-g data-testid="unit-g" placeholder="${per}" aria-label="כמה היחידה שוקלת">
+    <span class="unit-suffix">${per}</span>
+    <button type="button" class="icon-btn" data-remove aria-label="הסרת יחידה">✕</button>`;
+  row.querySelector('[data-unit-name]').value = name;
+  row.querySelector('[data-unit-g]').value = grams;
+  $('#ff-units').append(row);
+  return row;
+}
+
 function openFoodForm({ barcode = '', name = '', hint } = {}) {
   const form = $('#food-form');
   form.reset();
+  $('#ff-units').innerHTML = '';
+  ffState.customHint = !!hint;
   $('#ff-barcode').value = barcode;
   $('#ff-name').value = name;
-  $('#food-form-hint').textContent = hint || 'הערכים מופיעים על גב האריזה, בטבלה "ל-100 גרם".';
+  $('#food-form-hint').textContent = hint || '';
+  setFoodKind('solid');
   $('#food-sheet').showModal();
+}
+
+function readUnitRows() {
+  const units = [];
+  for (const row of $$('#ff-units .unit-row')) {
+    const nameEl = row.querySelector('[data-unit-name]');
+    const gEl = row.querySelector('[data-unit-g]');
+    const name = nameEl.value.trim();
+    const g = Number(gEl.value) || 0;
+    nameEl.setCustomValidity(''); gEl.setCustomValidity('');
+    if (!name && !gEl.value) continue;                       // empty row: ignore
+    if (!name) { nameEl.setCustomValidity('כתבו שם ליחידה'); nameEl.reportValidity(); return null; }
+    if (g <= 0) { gEl.setCustomValidity('כתבו כמה היחידה שוקלת'); gEl.reportValidity(); return null; }
+    if (units.some((u) => u.name === name)) { nameEl.setCustomValidity('כבר יש יחידה בשם הזה'); nameEl.reportValidity(); return null; }
+    units.push({ name, g });
+  }
+  return units;
 }
 
 async function saveFoodForm(ev) {
   ev.preventDefault();
+  const units = readUnitRows();
+  if (!units) return;
   const num = (id) => Number($(id).value) || 0;
   const barcode = $('#ff-barcode').value.replace(/\D/g, '');
   const food = {
@@ -738,9 +800,8 @@ async function saveFoodForm(ev) {
     src: 'user',
   };
   if (barcode) food.barcode = barcode;
-  const unitName = $('#ff-unit').value.trim();
-  const unitG = num('#ff-unit-g');
-  if (unitName && unitG > 0) food.m.push(['u1', unitG, unitName]);
+  if (ffState.kind === 'liquid') food.liquid = true;
+  units.forEach((u, i) => food.m.push([`u${i + 1}`, u.g, u.name]));
   await put('myFoods', food);
   await refreshMyFoods();
   $('#food-sheet').close();
@@ -973,6 +1034,17 @@ function bind() {
   $('#open-new-food').onclick = () => openFoodForm({ name: $('#search').value.trim() });
   $('#food-close').onclick = () => $('#food-sheet').close();
   $('#food-form').onsubmit = saveFoodForm;
+  $('#ff-kind').addEventListener('click', (e) => { const b = e.target.closest('[data-kind]'); if (b) setFoodKind(b.dataset.kind); });
+  $('#ff-add-unit').onclick = () => addUnitRow().querySelector('[data-unit-name]').focus();
+  $('#ff-unit-chips').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-preset]');
+    if (!b) return;
+    const existing = $$('#ff-units [data-unit-name]').find((i) => i.value.trim() === b.dataset.preset);
+    const row = existing?.closest('.unit-row') || addUnitRow(b.dataset.preset, b.dataset.g);
+    row.querySelector('[data-unit-g]').focus();
+  });
+  $('#ff-units').addEventListener('click', (e) => { if (e.target.closest('[data-remove]')) e.target.closest('.unit-row').remove(); });
+  $('#ff-units').addEventListener('input', (e) => e.target.setCustomValidity?.(''));
 
   $('#range-picker').addEventListener('click', (e) => {
     const b = e.target.closest('[data-range]');
