@@ -206,7 +206,7 @@
   <!-- Confirm items: the single entry point for logging food (search, barcode, photos) -->
   <dialog class="sheet" id="confirm-sheet" data-testid="confirm-sheet">
     <form method="dialog" id="confirm-form">
-      <header class="sheet-head"><h2 id="confirm-title">הוספה ליומן</h2><button class="icon-btn" value="cancel" formnovalidate aria-label="סגירה">✕</button></header>
+      <header class="sheet-head"><h2 id="confirm-title">הוספה ליומן</h2><button type="button" class="icon-btn" id="confirm-close" aria-label="סגירה">✕</button></header>
       <div id="confirm-items"></div>
       <label>ארוחה<select id="confirm-meal" data-testid="confirm-meal"></select></label>
       <div class="confirm-total">סה״כ: <strong id="confirm-total" data-testid="confirm-total">0</strong> קק״ל</div>

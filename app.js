@@ -21,6 +21,7 @@ const fmt1 = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n) * 10) / 1
 
 const state = {
   date: isoDate(),
+  today: isoDate(),   // the calendar day the app last saw; when it changes, "today" moves with it
   view: 'today',
   addMeal: mealForHour(new Date().getHours()),
   addTab: 'recent',
@@ -110,6 +111,11 @@ function builtText(iso) {
     + ' ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
 }
 
+// the field the user has typed into since focusing it (unsaved text an update reload would lose)
+let typedIn = null;
+document.addEventListener('focusin', () => { typedIn = null; });
+document.addEventListener('input', (e) => { typedIn = e.target; });
+
 let localStore = null;
 try { localStore = window.localStorage; } catch { /* storage blocked */ }
 
@@ -124,7 +130,8 @@ const updater = createUpdater({
   serviceWorker: 'serviceWorker' in navigator && location.protocol !== 'file:' ? navigator.serviceWorker : null,
   cacheExists: async (version) => { try { return await caches.has(`kalorit-app-${version}`); } catch { return false; } },
   isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
-    || (state.view === 'add' && $('#search').value.trim() !== ''),
+    || (state.view === 'add' && $('#search').value.trim() !== '')
+    || (typedIn && typedIn === document.activeElement),   // mid-typing in a field (settings, weight, sync code, key)
   // the camera or picker is open over the app, a paid recognition is running, or its items await approval
   keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming || !!photo.stream,
   reload: () => location.reload(),
@@ -227,7 +234,19 @@ async function shareCode() {
 
 // ---------- navigation ----------
 
+// A new day while the app stayed open (Android keeps installed apps alive overnight): if the user
+// was looking at "today", move to the new today, and suggest the meal for the current hour again.
+function rollDay() {
+  const now = isoDate();
+  if (now === state.today) return false;
+  if (state.date === state.today) state.date = now;
+  state.today = now;
+  state.addMeal = mealForHour(new Date().getHours());
+  return true;
+}
+
 function show(view) {
+  rollDay();
   state.view = view;
   for (const v of $$('.view')) v.hidden = v.id !== `view-${view}`;
   for (const b of $$('.bottomnav button')) {
@@ -436,13 +455,28 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
 
   return new Promise((resolve) => {
     sheet.onclose = async () => {
-      if (sheet.returnValue !== 'save') return resolve(null);
+      if (sheet.returnValue !== 'save') {
+        // a star toggled before cancelling still changed favourites / my foods: show it
+        await refreshMyFoods();
+        if (state.view === 'add') renderResults();
+        return resolve(null);
+      }
       compute();
       const mealId = $('#confirm-meal').value;
       const ids = [];
+      // editing an amount down to 0 means "remove it", with undo, rather than silently doing nothing
+      if (editId && rows.every((r) => r.grams <= 0)) {
+        const prev = await db.log.get(editId);
+        if (prev) {
+          await remove('entries', editId);
+          toast('הפריט נמחק', async () => { await put('entries', prev); renderToday(); });
+        }
+        renderToday();
+        return resolve([]);
+      }
       for (const r of rows) {
         if (r.grams <= 0) continue;
-        if (!r.food.id.startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
+        if (!String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
         const entry = {
           date: state.date, meal: mealId, foodId: r.food.id, name: r.food.n,
           amount: r.amount, unit: r.unit, grams: r.grams, ...r.n, ts: Date.now(),
@@ -671,7 +705,9 @@ function closePhoto() {
 
 // ---------- barcode ----------
 
+// scanGen: bumped on every stop, so a camera start that finishes after the sheet closed is undone
 let scanner = null;
+let scanGen = 0;
 async function openScanner() {
   const sheet = $('#scan-sheet');
   $('#barcode-input').value = '';
@@ -681,25 +717,33 @@ async function openScanner() {
     $('#scan-status').textContent = 'אין גישה למצלמה. אפשר להקליד את מספר הברקוד.';
     return;
   }
+  const gen = ++scanGen;
+  let instance;
   try {
     const F = window.Html5QrcodeSupportedFormats;
-    scanner = new window.Html5Qrcode('scanner', {
+    instance = new window.Html5Qrcode('scanner', {
       formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128],
       experimentalFeatures: { useBarCodeDetectorIfSupported: true },
       verbose: false,
     });
-    await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 260, height: 140 } },
-      (code) => { stopScanner(); handleBarcode(code); }, () => {});
+    await instance.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 260, height: 140 } },
+      (code) => { if (gen === scanGen) { stopScanner(); handleBarcode(code); } }, () => {});
+    if (gen !== scanGen || !sheet.open) {   // closed (or a code typed) while the camera was starting
+      try { await instance.stop(); instance.clear(); } catch { /* not running */ }
+      return;
+    }
+    scanner = instance;
   } catch {
-    $('#scan-status').textContent = 'המצלמה לא זמינה. אפשר להקליד את מספר הברקוד.';
-    scanner = null;
+    if (gen === scanGen && sheet.open) $('#scan-status').textContent = 'המצלמה לא זמינה. אפשר להקליד את מספר הברקוד.';
   }
 }
 
 async function stopScanner() {
-  if (scanner) {
-    try { await scanner.stop(); scanner.clear(); } catch { /* already stopped */ }
-    scanner = null;
+  scanGen++;
+  const s = scanner;
+  scanner = null;
+  if (s) {
+    try { await s.stop(); s.clear(); } catch { /* already stopped */ }
   }
 }
 
@@ -713,9 +757,10 @@ async function handleBarcode(code) {
   if (!code) return;
   $('#scan-status').textContent = `מחפש ${code}…`;
   let food = state.myFoods.find((f) => f.barcode === code) || null;
+  let offline = false;
   if (!food) {
     try { food = await lookupBarcode(code); }
-    catch { $('#scan-status').textContent = 'אין חיבור למאגר הברקודים. אפשר להזין את המוצר ידנית.'; }
+    catch { offline = true; }
   }
   await closeScanner();
   if (food) {
@@ -723,7 +768,9 @@ async function handleBarcode(code) {
     await refreshMyFoods();
     confirmItems([{ food }]);
   } else {
-    openFoodForm({ barcode: code, hint: 'המוצר לא נמצא במאגר. הזינו את הערכים מהתווית, והוא יישמר אצלכם לפעם הבאה.' });
+    openFoodForm({ barcode: code, hint: offline
+      ? 'אין חיבור למאגר הברקודים כרגע. אפשר להזין את הערכים מהתווית, והמוצר יישמר אצלכם לפעם הבאה.'
+      : 'המוצר לא נמצא במאגר. הזינו את הערכים מהתווית, והוא יישמר אצלכם לפעם הבאה.' });
   }
 }
 
@@ -967,7 +1014,10 @@ async function importBackup(file) {
 function bind() {
   $('.bottomnav').addEventListener('click', (e) => {
     const b = e.target.closest('[data-view]');
-    if (b) show(b.dataset.view);
+    if (!b) return;
+    // "add" from the bottom bar suggests the meal for now; a meal card's "+" picks its own meal
+    if (b.dataset.view === 'add' && state.date === isoDate()) state.addMeal = mealForHour(new Date().getHours());
+    show(b.dataset.view);
   });
   $('#day-prev').onclick = () => setDate(addDays(state.date, -1));
   $('#day-next').onclick = () => { if (state.date < isoDate()) setDate(addDays(state.date, 1)); };
@@ -980,13 +1030,20 @@ function bind() {
     if (add) { state.addMeal = add.dataset.addMeal; show('add'); $('#search').focus(); }
     else if (del) {
       const entry = await db.log.get(del.dataset.del);
+      if (!entry) { renderToday(); return; }   // already removed (e.g. by a sync from another phone)
       await remove('entries', entry.id);
       renderToday();
       toast('הפריט נמחק', async () => { await put('entries', entry); renderToday(); });
     } else if (edit) {
       const entry = await db.log.get(edit.dataset.edit);
-      const food = state.byId.get(entry.foodId);
-      if (food) confirmItems([{ food, amount: entry.amount, unit: entry.unit, grams: entry.grams }], { meal: entry.meal, editId: entry.id });
+      if (!entry) { renderToday(); return; }
+      // a food this phone does not know (synced from another phone, or removed): rebuild it from the
+      // entry's own values, so the entry can still be edited in grams
+      const per100 = (v) => (entry.grams > 0 ? Math.round(((Number(v) || 0) / entry.grams) * 1000) / 10 : 0);
+      const food = state.byId.get(entry.foodId) || {
+        id: entry.foodId, n: String(entry.name ?? ''), kcal: per100(entry.kcal), p: per100(entry.p), c: per100(entry.c), f: per100(entry.f), m: [],
+      };
+      confirmItems([{ food, amount: entry.amount ?? entry.grams, unit: entry.unit, grams: entry.grams }], { meal: entry.meal, editId: entry.id });
     }
   });
   $('#quick').addEventListener('click', (e) => {
@@ -1038,6 +1095,10 @@ function bind() {
   $('#open-scan').onclick = openScanner;
   $('#scan-close').onclick = closeScanner;
   $('#scan-sheet').addEventListener('cancel', (e) => { e.preventDefault(); closeScanner(); });
+  // however the sheet closes (back gesture without a cancel event included), the camera goes off
+  $('#scan-sheet').addEventListener('close', () => { stopScanner(); });
+  // ✕ is a plain button, so Enter in the amount field submits with "save", not with ✕
+  $('#confirm-close').onclick = () => $('#confirm-sheet').close('cancel');
   $('#barcode-form').onsubmit = (e) => { e.preventDefault(); handleBarcode($('#barcode-input').value); };
   $('#open-new-food').onclick = () => openFoodForm({ name: $('#search').value.trim() });
   $('#food-close').onclick = () => $('#food-sheet').close();
@@ -1111,6 +1172,7 @@ function bind() {
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') { updater.onHidden(); return; }
+    if (rollDay()) { renderDate(); if (state.view === 'add') renderMealPicker(); }
     // back from the camera or picker: the change event (if any) fires right after this
     if (photo.picking) setTimeout(() => { photo.picking = false; }, 3000);
     // the system may stop the camera while the app is in the background: start it again

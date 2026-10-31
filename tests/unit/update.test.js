@@ -85,15 +85,17 @@ test('worker fails to activate: no reload', async () => {
   assert.equal(t.reloads(), 0);
 });
 
-test('busy (dialog open, save in flight): deferred until the app is hidden', async () => {
+test('busy (dialog open, save in flight): deferred, and not applied in the background while still busy', async () => {
   let busy = true;
   const t = setup({ isBusy: () => busy });
   assert.equal(await t.u.check(), 'deferred');
   assert.equal(t.reloads(), 0);
   assert.equal(t.u.hasPending(), true);
+  t.u.onHidden();                       // half-filled form left open while switching apps: keep it
+  assert.equal(t.reloads(), 0);
+  busy = false;
   t.u.onHidden();
   assert.equal(t.reloads(), 1);
-  busy = false;
 });
 
 test('keepAlive (camera open, paid request running): no reload even in the background', async () => {
