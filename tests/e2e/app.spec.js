@@ -253,6 +253,28 @@ test('meal photo: recognized items open the confirm sheet, matched or estimated'
   await expect(page.getByTestId('eaten')).toHaveText(String(Math.round(150 * 1.45 + 80 * 4)));
 });
 
+test('meal photo: scrambled eggs open as 3 eggs, matched to the database through an alternative term', async ({ page }) => {
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ items: [
+    { name: 'ביצים מקושקשות', query: 'ביצים מקושקשות', alt_queries: ['חביתה'], grams: 150, unit_name: 'ביצה', unit_count: 3, unit_grams: 50,
+      kcal_per_100g: 160, protein_per_100g: 11, carbs_per_100g: 1.5, fat_per_100g: 12 },
+    { name: 'עוגיית שוקולד של סבתא', query: 'עוגיית שוקולד של סבתא', alt_queries: [], grams: 60, unit_name: 'עוגייה', unit_count: 2, unit_grams: 30,
+      kcal_per_100g: 480, protein_per_100g: 6, carbs_per_100g: 60, fat_per_100g: 24 },
+  ] }) }] } }));
+  await open(page);
+  await saveApiKey(page, 'sk-ant-test');
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('photo-input').setInputFiles(photoFile);
+  await expect(page.getByTestId('confirm-sheet')).toBeVisible();
+  const rows = page.locator('#confirm-items .confirm-item');
+  await expect(rows.nth(0).locator('.ci-name')).toContainText('חביתה');
+  await expect(rows.nth(0).getByTestId('amount')).toHaveValue('3');
+  await expect(rows.nth(0).getByTestId('unit')).toHaveValue('egg');
+  // not in the database: still counted in its own unit, and grams remain available
+  await expect(rows.nth(1).getByTestId('item-note')).toContainText('ערכים משוערים');
+  await expect(rows.nth(1).getByTestId('amount')).toHaveValue('2');
+  await expect(rows.nth(1).getByTestId('unit').locator('option')).toHaveText(['גרם', 'עוגייה (30 ג׳)']);
+});
+
 test('meal photo: without a key, explains and links to settings; a bad key says so', async ({ page }) => {
   await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ status: 401, json: { error: { message: 'invalid x-api-key' } } }));
   await open(page);

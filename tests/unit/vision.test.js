@@ -19,7 +19,7 @@ test('request: image first, structured output, no sampling params', () => {
 test('parse: maps fields, drops empty and zero-gram items, clamps bad numbers', () => {
   const items = parseResponse(reply([item, { ...item, name: '', grams: 10 }, { ...item, name: 'מים', grams: 0 }, { ...item, name: 'x', kcal_per_100g: -5, grams: 12.6 }]));
   assert.equal(items.length, 2);
-  assert.deepEqual(items[0], { name: 'אורז לבן', query: 'אורז לבן מבושל', grams: 150, kcal: 130, p: 2.7, c: 28, f: 0.3 });
+  assert.deepEqual(items[0], { name: 'אורז לבן', query: 'אורז לבן מבושל', queries: ['אורז לבן מבושל'], grams: 150, unit: null, kcal: 130, p: 2.7, c: 28, f: 0.3 });
   assert.equal(items[1].kcal, 0);
   assert.equal(items[1].grams, 13);
 });
@@ -65,4 +65,25 @@ test('analyzePhoto: headers, key handling and HTTP errors', async () => {
   await assert.rejects(analyzePhoto({ apiKey: 'k', imageBase64: 'x', fetchImpl: noCredit }),
     (e) => e.code === 'credit' && e.detail.includes('credit balance'));
   await assert.rejects(analyzePhoto({ apiKey: 'k', imageBase64: 'x', fetchImpl: async () => { throw new TypeError('Failed to fetch'); } }), (e) => e.code === 'network');
+});
+
+test('counted foods: unit kept, weight follows the count, alternative search terms', async () => {
+  const { amountFor } = await import('../../lib/vision.js');
+  const eggs = parseResponse(reply([{ ...item, name: 'ביצים מקושקשות', query: 'ביצים מקושקשות', alt_queries: ['חביתה', 'חביתה', ''],
+    grams: 170, unit_name: 'ביצה', unit_count: 3, unit_grams: 50, kcal_per_100g: 160 }]))[0];
+  assert.deepEqual(eggs.unit, { name: 'ביצה', count: 3, grams: 50 });
+  assert.equal(eggs.grams, 150);                                   // 3 x 50, not the separate 170 guess
+  assert.deepEqual(eggs.queries, ['ביצים מקושקשות', 'חביתה']);
+  // no unit: empty name or zero count means "not counted"
+  assert.equal(parseResponse(reply([{ ...item, unit_name: 'כוס', unit_count: 0, unit_grams: 240 }]))[0].unit, null);
+
+  // not in the database: the estimate gets the unit, and opens as 3 eggs
+  const est = pickFood(eggs, [], { makeId: () => 'aE' });
+  assert.deepEqual(est.food.m, [['u1', 50, 'ביצה']]);
+  const label = (f, code) => (f.m.find(([c]) => c === code) || [])[2] || '';
+  assert.deepEqual(amountFor(eggs, est.food, label), { amount: 3, unit: 'u1' });
+  // a database food with an egg unit opens in eggs too; one without opens in grams
+  const omelette = { id: 't9', n: 'ביצה או חביתה מטוגנת ללא שמן', kcal: 162, m: [['egg', 43.7, 'ביצה'], ['800', 50]] };
+  assert.deepEqual(amountFor(eggs, omelette, label), { amount: 3, unit: 'egg' });
+  assert.deepEqual(amountFor(eggs, { id: 't8', n: 'x', kcal: 160, m: [] }, label), { amount: 150, unit: 'g' });
 });

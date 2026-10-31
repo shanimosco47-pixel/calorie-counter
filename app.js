@@ -7,7 +7,7 @@ import {
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
-import { analyzePhoto, pickFood, VisionError, ERROR_TEXT, NO_RETRY } from './lib/vision.js';
+import { analyzePhoto, pickFood, amountFor, VisionError, ERROR_TEXT, NO_RETRY } from './lib/vision.js';
 import { BUILD } from './build-info.js';
 import { createUpdater } from './lib/update.js';
 
@@ -628,11 +628,14 @@ async function analyzeMeal(source) {
     if (ctrl.signal.aborted) return;
     if (!recognized.length) throw new VisionError('empty', 'no food');
     const items = recognized.map((it, i) => {
-      const { food, estimated } = pickFood(it, matchFood(it.query, state.index, { limit: 8, boostIds: state.favIds }),
-        { makeId: () => 'a' + Date.now().toString(36) + i });
+      // candidates from every search term Claude gave, best-ranked first, without duplicates
+      const seen = new Set();
+      const candidates = it.queries.flatMap((q) => matchFood(q, state.index, { limit: 8, boostIds: state.favIds }))
+        .filter((f) => !seen.has(f.id) && seen.add(f.id));
+      const { food, estimated } = pickFood(it, candidates, { makeId: () => 'a' + Date.now().toString(36) + i });
       const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
         : (it.name !== food.n ? `זוהה: ${it.name}` : '');
-      return { food, amount: it.grams, unit: 'g', note };
+      return { food, ...amountFor(it, food, unitLabel), note };
     });
     photo.ctrl = null;
     sheet.close();
