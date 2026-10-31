@@ -120,3 +120,21 @@ test('amountFor on real Tzameret data: closest size wins, implausible sizes fall
   for (const [c, other] of boiled.m) if (/^b?10[0-5]$/.test(String(c))) assert.ok(Math.abs(2 * g - 100) <= Math.abs(2 * other - 100));
 });
 
+
+test('alternative terms: a hit must relate to what was seen; tiny units are not stored as 0 g', () => {
+  const cake = parseResponse(reply([{ ...item, name: 'עוגת גלידה', query: 'עוגת גלידה', alt_queries: ['גלידה'], grams: 120, kcal_per_100g: 230 }]))[0];
+  const sandwich = { id: 't1', n: 'גלידה, שלגון, מיני סנדוויץ, לייט', kcal: 181, altQuery: 'גלידה' };
+  assert.equal(pickFood(cake, [], { alternatives: [sandwich], makeId: () => 'aC' }).estimated, true);
+  const iceCake = { id: 't2', n: 'עוגה גלידה וניל', kcal: 220, altQuery: 'גלידה' };
+  const hit = pickFood(cake, [], { alternatives: [iceCake] });
+  assert.equal(hit.food.id, 't2');
+  assert.equal('altQuery' in hit.food, false);          // the search tag is not saved with the food
+  // plural vs singular still relates (ביצים ~ ביצה)
+  const eggs = parseResponse(reply([{ ...item, name: 'ביצים מקושקשות', query: 'ביצים מקושקשות', alt_queries: ['חביתה'], grams: 150, kcal_per_100g: 160 }]))[0];
+  assert.equal(pickFood(eggs, [], { alternatives: [{ id: 't3', n: 'ביצה או חביתה מטוגנת', kcal: 162, altQuery: 'חביתה' }] }).food.id, 't3');
+
+  const tablets = parseResponse(reply([{ ...item, name: 'ממתיק', query: 'ממתיק', grams: 1, unit_name: 'טבליה', unit_count: 50, unit_grams: 0.02 }]))[0];
+  assert.deepEqual(pickFood(tablets, [], { makeId: () => 'aT' }).food.m, []);
+  const seeds = parseResponse(reply([{ ...item, grams: 30, unit_name: 'צימוק', unit_count: 60, unit_grams: 0.5 }]))[0];
+  assert.deepEqual(pickFood(seeds, [], { makeId: () => 'aS' }).food.m, [['u1', 0.5, 'צימוק']]);
+});

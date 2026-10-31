@@ -632,7 +632,9 @@ async function analyzeMeal(source) {
       const search = (q) => matchFood(q, state.index, { limit: 8, boostIds: state.favIds });
       const candidates = search(it.queries[0] || it.name);
       const seen = new Set(candidates.map((f) => f.id));
-      const alternatives = it.queries.slice(1).flatMap(search).filter((f) => !seen.has(f.id) && seen.add(f.id));
+      const alternatives = it.queries.slice(1)
+        .flatMap((q) => search(q).map((f) => ({ ...f, altQuery: q })))
+        .filter((f) => !seen.has(f.id) && seen.add(f.id));
       const { food, estimated } = pickFood(it, candidates, { alternatives, makeId: () => 'a' + Date.now().toString(36) + i });
       const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
         : (it.name !== food.n ? `זוהה: ${it.name}` : '');
