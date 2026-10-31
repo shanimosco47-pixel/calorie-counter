@@ -21,6 +21,6 @@ printf '{"version":"%s","commit":"%s","builtAt":"%s"}\n' "$version" "$commit" "$
 # a cache name per build, so the browser installs a fresh service worker and cache
 sed -i "s/^const VERSION = '[^']*';/const VERSION = 'kalorit-app-$version';/" "$out/app/sw.js"
 cp scripts/site/index.html scripts/site/sw.js "$out/"
-cp icons/icon-192.png "$out/favicon.png"
+cp icons/food-192.png "$out/favicon.png"
 touch "$out/.nojekyll"
 echo "site built in $out (version $version, $built_at)"

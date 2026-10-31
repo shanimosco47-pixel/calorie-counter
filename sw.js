@@ -1,5 +1,5 @@
 // Offline support: app shell and food data are cached; Open Food Facts, Supabase and Claude API requests always go to the network.
-const VERSION = 'kalorit-app-v1.9.0';
+const VERSION = 'kalorit-app-v1.10.0';
 const SHELL = [
   './',
   'index.html',
@@ -20,8 +20,8 @@ const SHELL = [
   'vendor/html5-qrcode.min.js',
   'data/tzameret.json',
   'kalorit.webmanifest',
-  'icons/icon-192.png',
-  'icons/icon-512.png',
+  'icons/food-192.png',
+  'icons/food-512.png',
 ];
 
 self.addEventListener('install', (event) => {

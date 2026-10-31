@@ -104,3 +104,12 @@ test('defaultAmount picks the natural household measure', () => {
   assert.deepEqual(defaultAmount(f([['100', 5.5], ['200', 120]], 654)), { amount: 30, unit: 'g' });   // walnuts
   assert.deepEqual(defaultAmount(f([['500', 2.5]], 107)), { amount: 100, unit: 'g' });                 // 2.5 g ham slice
 });
+
+test('user units: the first one is the default; liquids without units start at 100 ml', async () => {
+  const { defaultAmount } = await import('../../lib/calc.js');
+  const shake = { kcal: 80, liquid: true, m: [['u1', 240, 'כוס'], ['u2', 350, 'מנה']] };
+  assert.deepEqual(defaultAmount(shake), { amount: 1, unit: 'u1' });
+  assert.deepEqual(defaultAmount({ kcal: 80, liquid: true, m: [] }), { amount: 100, unit: 'g' });
+  // a small unit the user chose is still the default (no "too small to count" penalty)
+  assert.deepEqual(defaultAmount({ kcal: 387, m: [['u1', 5, 'כפית']] }), { amount: 1, unit: 'u1' });
+});
