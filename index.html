@@ -61,9 +61,12 @@
       <div class="search-row">
         <input type="search" id="search" data-testid="search" placeholder="חיפוש מזון, למשל: חומוס, פיתה, קוטג׳" autocomplete="off" enterkeyhint="search">
       </div>
-      <label class="btn block file-btn photo-btn" data-testid="open-photo">📸 צילום מנה
-        <input type="file" accept="image/*" id="photo-input" data-testid="photo-input" hidden>
-      </label>
+      <div class="action-row photo-row">
+        <button type="button" class="btn" id="open-camera" data-testid="open-camera">📸 צילום מנה</button>
+        <label class="btn secondary file-btn" data-testid="open-photo">🖼️ מהגלריה
+          <input type="file" accept="image/*" id="photo-input" data-testid="photo-input" hidden>
+        </label>
+      </div>
       <div class="action-row">
         <button class="btn secondary" id="open-scan" data-testid="open-scan">📷 סריקת ברקוד</button>
         <button class="btn secondary" id="open-new-food" data-testid="open-new-food">＋ מזון חדש</button>
@@ -175,7 +178,8 @@
       <details class="card form" id="experimental">
         <summary>זיהוי מנות מתמונה</summary>
         <p class="muted">בלחיצה על "צילום מנה" במסך ההוספה: מצלמים, Claude מזהה את הפריטים ומעריך כמויות, ואתם מאשרים או מתקנים לפני ששום דבר נכנס ליומן.</p>
-        <p class="muted">המפתח נשמר בטלפון בלבד, לא מסונכרן לענן, ונשלח רק ל-Anthropic יחד עם התמונה. כל זיהוי עולה בערך 1-2 סנט מהחשבון שלכם. מומלץ להגדיר תקרת הוצאה למפתח ב-console.anthropic.com.</p>
+        <p class="muted">התמונות שמצלמים באפליקציה לא נשמרות בגלריה, בטלפון או באפליקציה: הן נשלחות לזיהוי בלבד ונמחקות מהזיכרון מיד אחריו.</p>
+        <p class="muted">המפתח נשמר בטלפון בלבד, לא מסונכרן לענן, ונשלח רק ל-Anthropic יחד עם התמונה. כל זיהוי עולה פחות מעשירית סנט מהחשבון שלכם (כ-1,500 תמונות לדולר). מומלץ להגדיר תקרת הוצאה למפתח ב-console.anthropic.com.</p>
         <label>מפתח Claude API<input type="password" id="api-key" data-testid="api-key" autocomplete="off" placeholder="sk-ant-..."></label>
         <button type="button" class="btn secondary" id="api-key-save" data-testid="api-key-save">שמירת מפתח</button>
       </details>
@@ -222,13 +226,19 @@
   <dialog class="sheet" id="photo-sheet" data-testid="photo-sheet">
     <div>
       <header class="sheet-head"><h2>זיהוי מנה</h2><button type="button" class="icon-btn" id="photo-close" aria-label="סגירה">✕</button></header>
+      <video id="camera" class="camera" data-testid="camera" aria-label="תצוגת מצלמה" playsinline muted hidden></video>
+      <button type="button" class="btn block" id="shutter" data-testid="shutter" hidden>צלם</button>
       <img id="photo-preview" class="photo-preview" alt="">
       <p class="center" id="photo-status" data-testid="photo-status" role="status"></p>
       <p class="muted center" id="photo-detail" data-testid="photo-detail" dir="ltr" hidden></p>
       <div class="action-row" id="photo-actions" hidden>
         <button type="button" class="btn" id="photo-retry" data-testid="photo-retry">ניסיון נוסף</button>
         <button type="button" class="btn secondary" id="photo-settings" data-testid="photo-settings" hidden>להגדרות</button>
+        <label class="btn secondary file-btn" id="camera-app" data-testid="camera-app" hidden>צילום באפליקציית המצלמה
+          <input type="file" accept="image/*" capture="environment" id="camera-input" data-testid="camera-input" hidden>
+        </label>
       </div>
+      <p class="muted center" id="camera-app-note" data-testid="camera-app-note" hidden>באפליקציית המצלמה של הטלפון ייתכן שהתמונה תישמר גם בגלריה.</p>
     </div>
   </dialog>
 

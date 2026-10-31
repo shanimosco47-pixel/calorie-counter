@@ -10,7 +10,8 @@ test('request: image first, structured output, no sampling params', () => {
   assert.equal(r.messages[0].content[0].type, 'image');
   assert.equal(r.messages[0].content[0].source.data, 'QUJD');
   assert.deepEqual(r.output_config.format, { type: 'json_schema', schema: RESPONSE_SCHEMA });
-  assert.equal(r.fallbacks, 'default');
+  assert.equal(r.model, 'claude-haiku-5-5');
+  assert.equal(r.fallbacks, undefined);   // not supported on Haiku
   assert.equal(r.temperature, undefined);
   assert.equal(r.thinking, undefined);
 });
