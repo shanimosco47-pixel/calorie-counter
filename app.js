@@ -999,11 +999,15 @@ async function saveTarget(ev) {
   if (mode === 'manual') await setSetting('manualTarget', Number($('#manual-target').value));
   else {
     const p = readProfile();
-    await setSetting('profile', p);
-    // a weight the user changed here is today's weigh-in, so the target and the weight chart agree;
-    // saving other settings leaves the weigh-ins alone (Codex P2 / review)
-    const latest = await db.weights.orderBy('date').last();
+    // the weight field shows the latest weigh-in. Edited: it is today's weigh-in and the new profile
+    // weight. Not edited: the profile keeps its own weight and the weigh-ins stay as they are, so
+    // saving other settings never changes them, and deleting a mistyped weigh-in later still falls
+    // back to the right value (Codex P2 / review)
+    const prev = await getSetting('profile', null);
     const edited = $('#p-weight').value !== ($('#p-weight').dataset.shown ?? '');
+    if (!edited && prev?.weight > 0) p.weight = prev.weight;
+    await setSetting('profile', p);
+    const latest = await db.weights.orderBy('date').last();
     if (p.weight > 0 && (!latest || (edited && latest.kg !== p.weight))) await put('weights', { date: isoDate(), kg: p.weight });
     $('#p-weight').dataset.shown = $('#p-weight').value;
   }
@@ -1027,8 +1031,13 @@ async function importBackup(file) {
   try {
     const data = parseBackup(await file.text());
     // with sync on, take in other phones' changes first: restore then knows about their deletes
-    if ((await sync.status()).code) await sync.syncNow();
-    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הפריטים מהגיבוי יחזרו, גם כאלה שנמחקו אחריו. שום דבר לא יימחק: מה שנוסף או נערך אחרי הגיבוי יישאר.`)) return;
+    let offlineNote = '';
+    if ((await sync.status()).code) {
+      toast('מסנכרן לפני השחזור…');
+      const res = await sync.syncNow();
+      if (res?.error) offlineNote = ' אין חיבור לענן כרגע: פריטים שנמחקו בטלפון אחר אולי לא יחזרו.';
+    }
+    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הפריטים מהגיבוי יחזרו, גם כאלה שנמחקו אחריו. שום דבר לא יימחק: מה שנוסף או נערך אחרי הגיבוי יישאר.${offlineNote}`)) return;
     await restoreAll(data);
     await refreshMyFoods();
     await loadTarget();
