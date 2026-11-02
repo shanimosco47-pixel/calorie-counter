@@ -20,7 +20,7 @@ function fakeRemote() {
       for (const r of batch) {
         const key = `${code}|${r.kind}|${r.id}`;
         const cur = rows.get(key);
-        if (!r.id || String(r.id).length > 200) { rejected.push({ kind: r.kind, id: r.id, reason: 'invalid' }); continue; }
+        if (!r.id || String(r.id).length > 200 || !(r.ts > 0)) { rejected.push({ kind: r.kind, id: r.id, reason: 'invalid' }); continue; }
         if (!cur || r.ts >= cur.ts) rows.set(key, { ...structuredClone(r), code, updated_at: remote.fixedTime || stamp() });
         else rejected.push({ kind: r.kind, id: r.id, reason: 'stale' });
       }
@@ -420,4 +420,29 @@ test('deletes kept from a disconnect are not replayed into a different sync code
   remote.online = true;
   await c.sync.connect(codeA);
   assert.equal(remote.rows.get(`${codeA}|weights|2026-10-21`).data, null, 'same vault: the delete is sent');
+});
+
+test('rows from the first app version (no mt) still reach the cloud (Codex P2)', async () => {
+  const name = `legacy-mt-${Date.now()}`;
+  const old = new Dexie(name);
+  old.version(1).stores({ entries: '++id, date, meal, foodId, ts', myFoods: 'id, barcode, n', favorites: 'foodId', weights: 'date', settings: 'key' });
+  await old.myFoods.put({ id: 'u1', n: 'עוגה של סבתא', kcal: 350, p: 5, c: 45, f: 16, m: [] });
+  await old.favorites.put({ foodId: 'u1' });
+  await old.weights.put({ date: '2026-10-01', kg: 72 });
+  await old.settings.put({ key: 'manualTarget', value: 1800 });
+  old.close();
+
+  const remote = fakeRemote();
+  const store = createStore(name, Dexie);
+  const sync = createSync(store, remote, { debounceMs: 60000 });
+  devices.push({ store, sync });
+  const code = generateCode();
+  await sync.connect(code);
+  for (const k of ['myFoods|u1', 'favorites|u1', 'weights|2026-10-01', 'settings|manualTarget']) {
+    assert.ok(remote.rows.get(`${code}|${k}`)?.data, `missing in cloud: ${k}`);
+  }
+  const b = device(remote);
+  await b.sync.connect(code);
+  assert.equal((await b.db.myFoods.get('u1')).n, 'עוגה של סבתא');
+  assert.equal((await b.db.weights.get('2026-10-01')).kg, 72);
 });
