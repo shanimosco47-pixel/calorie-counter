@@ -183,7 +183,14 @@
         <p class="muted">בלחיצה על "צילום מנה" במסך ההוספה: מצלמים, Claude מזהה את הפריטים ומעריך כמויות, ואתם מאשרים או מתקנים לפני ששום דבר נכנס ליומן.</p>
         <p class="muted">התמונות שמצלמים באפליקציה לא נשמרות בגלריה, בטלפון או באפליקציה: הן נשלחות לזיהוי בלבד ונמחקות מהזיכרון מיד אחריו.</p>
         <p class="muted">המפתח נשמר בטלפון בלבד, לא מסונכרן לענן, ונשלח רק ל-Anthropic יחד עם התמונה. כל זיהוי עולה פחות מעשירית סנט מהחשבון שלכם (כ-1,500 תמונות לדולר). מומלץ להגדיר תקרת הוצאה למפתח ב-console.anthropic.com.</p>
-        <label>מפתח Claude API<input type="password" id="api-key" data-testid="api-key" autocomplete="off" placeholder="sk-ant-..."></label>
+        <!-- a plain text field with masked characters, not type="password": password managers treat any
+             password field as a login and keep offering to save or fill a "password" -->
+        <label for="api-key">מפתח Claude API</label>
+        <div class="key-row">
+          <input type="text" id="api-key" class="masked" data-testid="api-key" name="kalorit-claude-key" autocomplete="off"
+            autocapitalize="off" autocorrect="off" spellcheck="false" dir="ltr" data-lpignore="true" data-1p-ignore placeholder="sk-ant-...">
+          <button type="button" class="btn secondary" id="api-key-show" data-testid="api-key-show" aria-pressed="false">הצגה</button>
+        </div>
         <button type="button" class="btn secondary" id="api-key-save" data-testid="api-key-save">שמירת מפתח</button>
       </details>
 
