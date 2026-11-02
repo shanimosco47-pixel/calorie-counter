@@ -951,7 +951,12 @@ async function renderSettings() {
   const p = (await getSetting('profile', null)) || { sex: 'female', age: '', height: '', weight: '', activity: 1.375, goal: -500 };
   $('#p-activity').innerHTML = ACTIVITY.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
   $('#p-goal').innerHTML = GOALS.map((g) => `<option value="${g.id}">${g.label}</option>`).join('');
-  $('#p-sex').value = p.sex; $('#p-age').value = p.age; $('#p-height').value = p.height; $('#p-weight').value = p.weight;
+  $('#p-sex').value = p.sex; $('#p-age').value = p.age; $('#p-height').value = p.height;
+  // the current weight is the latest weigh-in (History); remember what was shown, so saving other
+  // settings does not record it again as today's weigh-in
+  const latestWeigh = await db.weights.orderBy('date').last();
+  $('#p-weight').value = latestWeigh?.kg ?? p.weight;
+  $('#p-weight').dataset.shown = $('#p-weight').value;
   $('#p-activity').value = String(p.activity); $('#p-goal').value = String(p.goal);
   $('#manual-target').value = (await getSetting('manualTarget', null)) || state.target;
   $('#api-key').value = (await getSetting('apiKey', '')) || '';
@@ -995,9 +1000,12 @@ async function saveTarget(ev) {
   else {
     const p = readProfile();
     await setSetting('profile', p);
-    // a weight changed in Settings is today's weigh-in, so the target and the weight chart agree
+    // a weight the user changed here is today's weigh-in, so the target and the weight chart agree;
+    // saving other settings leaves the weigh-ins alone (Codex P2 / review)
     const latest = await db.weights.orderBy('date').last();
-    if (!latest || latest.kg !== p.weight) await put('weights', { date: isoDate(), kg: p.weight });
+    const edited = $('#p-weight').value !== ($('#p-weight').dataset.shown ?? '');
+    if (p.weight > 0 && (!latest || (edited && latest.kg !== p.weight))) await put('weights', { date: isoDate(), kg: p.weight });
+    $('#p-weight').dataset.shown = $('#p-weight').value;
   }
   await loadTarget();
   toast(`היעד נשמר: ${fmt(state.target)} קק״ל`);
@@ -1018,6 +1026,8 @@ async function exportBackup() {
 async function importBackup(file) {
   try {
     const data = parseBackup(await file.text());
+    // with sync on, take in other phones' changes first: restore then knows about their deletes
+    if ((await sync.status()).code) await sync.syncNow();
     if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הפריטים מהגיבוי יחזרו, גם כאלה שנמחקו אחריו. שום דבר לא יימחק: מה שנוסף או נערך אחרי הגיבוי יישאר.`)) return;
     await restoreAll(data);
     await refreshMyFoods();

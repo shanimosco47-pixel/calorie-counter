@@ -491,3 +491,53 @@ test('rows from the first app version (no mt) still reach the cloud (Codex P2)',
   assert.equal((await b.db.myFoods.get('u1')).n, 'עוגה של סבתא');
   assert.equal((await b.db.weights.get('2026-10-01')).kg, 72);
 });
+
+test('outbox rows an older app left with ts 0 are sent with ts 1 (second review #2)', async () => {
+  const remote = fakeRemote();
+  const a = device(remote);
+  const code = generateCode();
+  await a.db.meta.put({ key: 'syncCode', value: code });
+  await a.db.weights.put({ date: '2026-09-02', kg: 74 });                 // unstamped v1 row
+  await a.db.outbox.put({ key: 'weights|2026-09-02', kind: 'weights', id: '2026-09-02', data: { date: '2026-09-02', kg: 74 }, ts: 0 });
+  await a.sync.syncNow();
+  assert.ok(remote.rows.get(`${code}|weights|2026-09-02`)?.data, 'reached the cloud');
+  assert.equal((await a.sync.status()).skipped || 0, 0);
+});
+
+test('two first-version phones with the same unstamped key converge (second review #4)', async () => {
+  const remote = fakeRemote();
+  const code = generateCode();
+  const mk = async (kg) => {
+    const name = `v1-${kg}-${Date.now()}`;
+    const old = new Dexie(name);
+    old.version(1).stores({ entries: '++id, date, meal, foodId, ts', myFoods: 'id, barcode, n', favorites: 'foodId', weights: 'date', settings: 'key' });
+    await old.weights.put({ date: '2026-09-03', kg });
+    old.close();
+    const store = createStore(name, Dexie);
+    const sync = createSync(store, remote, { debounceMs: 60000 });
+    devices.push({ store, sync });
+    return { store, sync, db: store.db };
+  };
+  const a = await mk(70);
+  const b = await mk(80);
+  await a.sync.connect(code);
+  await b.sync.connect(code);
+  await a.sync.syncNow();
+  await b.sync.syncNow();
+  const cloud = remote.rows.get(`${code}|weights|2026-09-03`).data.kg;
+  assert.equal((await a.db.weights.get('2026-09-03')).kg, cloud);
+  assert.equal((await b.db.weights.get('2026-09-03')).kg, cloud);
+  const calls = remote.calls;                                             // and it settles
+  await a.sync.syncNow();
+  assert.equal(await a.db.outbox.count(), 0);
+  assert.ok(remote.calls - calls <= 2);
+});
+
+test('a backup with a barcode longer than 64 keeps the food and drops the barcode (second review nit)', async () => {
+  const a = device(fakeRemote());
+  const long = '1'.repeat(80);
+  await a.store.restoreAll({ entries: [], myFoods: [{ id: 'u9', barcode: long, n: 'מוצר ארוך', kcal: 100, p: 1, c: 2, f: 3, m: [] }], favorites: [], weights: [], settings: [] });
+  const f = await a.db.myFoods.get('u9');
+  assert.equal(f.n, 'מוצר ארוך');
+  assert.equal(f.barcode, undefined);
+});
