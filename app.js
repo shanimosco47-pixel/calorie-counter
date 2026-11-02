@@ -463,9 +463,11 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
     let amount = d.amount;
     let unit = d.unit;
     if (grams && unitG) amount = Math.max(0.5, Math.round((grams / unitG) * 2) / 2);
-    else if (grams) { amount = Math.round(grams); unit = 'g'; }
-    const was = r.query || r.food.n;
-    Object.assign(r, { food, amount, unit, note: `במקום: ${was}`, query: r.query });
+    // rounding to half a unit must not change the portion much (30 g of rice is not half a 158 g cup):
+    // the user corrected what it is, not how much, so keep the grams when the unit would drift > 15%
+    if (grams && (!unitG || Math.abs(amount * unitG - grams) > 0.15 * grams)) { amount = Math.round(grams); unit = 'g'; }
+    r.query ||= r.food.n;                    // the original name, kept across several replacements
+    Object.assign(r, { food, amount, unit, note: `במקום: ${r.query}` });
     const el = box.querySelector(`[data-i="${i}"]`);
     el.innerHTML = itemHtml(r, i);
     compute();
@@ -1272,6 +1274,10 @@ function bind() {
   $('#export-btn').onclick = exportBackup;
   $('#import-input').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#install-btn').onclick = installApp;
+  // the key is shown only while looking at it: hidden again after saving or closing the section
+  const hideKey = () => { $('#api-key').classList.add('masked'); $('#api-key-show').textContent = 'הצגה'; $('#api-key-show').setAttribute('aria-pressed', 'false'); };
+  $('#experimental').addEventListener('toggle', hideKey);
+  $('#api-key-save').addEventListener('click', hideKey);
   $('#api-key-show').onclick = () => {
     const shown = $('#api-key').classList.toggle('masked') === false;
     $('#api-key-show').textContent = shown ? 'הסתרה' : 'הצגה';

@@ -517,7 +517,7 @@ test('saving settings after a mistyped weigh-in, then deleting it, restores the 
   await expect.poll(() => page.evaluate(async () => {                     // wait until that save is stored
     const { getSetting } = await import('./lib/db.js');
     return (await getSetting('profile', null))?.activity;
-  })).toBe(1.55);
+  }), { timeout: 15000 }).toBe(1.55);                                     // the first save's toast can sit over the button for 4 s
   const expected = await page.evaluate(async () => {
     const { dailyTarget } = await import('./lib/calc.js');
     return dailyTarget({ sex: 'male', age: 30, height: 175, weight: 70, activity: 1.55, goal: -500 }).toLocaleString('en-US');
@@ -586,4 +586,36 @@ test('any logged item can be replaced while editing it', async ({ page }) => {
   await page.getByTestId('confirm-save').click();
   await expect(page.getByTestId('entry')).toHaveCount(1);
   await expect(page.getByTestId('entry')).toContainText('לחם');
+});
+
+test('replacing keeps the portion: a small amount does not become half a big unit (review/Codex #1); the note keeps the original (#2)', async ({ page }) => {
+  await open(page);
+  await addBySearch(page, 'פיתה');
+  await page.getByTestId('unit').selectOption('g');
+  await page.getByTestId('amount').fill('30');
+  const item = page.locator('#confirm-items .confirm-item').first();
+  await item.getByTestId('swap').click();
+  await item.getByTestId('swap-search').fill('אורז לבן מבושל');
+  await item.getByTestId('swap-result').filter({ hasText: 'אורז לבן, מבושל, ללא תוספת שומן' }).first().click();
+  await expect(item.getByTestId('unit')).toHaveValue('g');                    // a 158 g cup would be wrong
+  await expect(item.getByTestId('amount')).toHaveValue('30');
+  await expect(item.getByTestId('item-note')).toContainText('במקום: פיתה');
+  await item.getByTestId('swap').click();                                      // a second replacement
+  await item.getByTestId('swap-search').fill('קוסקוס');
+  await item.getByTestId('swap-result').first().click();
+  await expect(item.getByTestId('item-note')).toContainText('במקום: פיתה');   // still the original
+  await expect(item.getByTestId('amount')).toHaveValue('30');
+});
+
+test('the shown key is hidden again after saving (review #3)', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('nav-settings').click();
+  await page.locator('#experimental summary').click();
+  const key = page.getByTestId('api-key');
+  await key.fill('sk-ant-secret');
+  await page.getByTestId('api-key-show').click();
+  expect(await key.evaluate((el) => getComputedStyle(el).webkitTextSecurity)).toBe('none');
+  await page.getByTestId('api-key-save').click();
+  expect(await key.evaluate((el) => getComputedStyle(el).webkitTextSecurity)).toBe('disc');
+  await expect(page.getByTestId('api-key-show')).toHaveText('הצגה');
 });
