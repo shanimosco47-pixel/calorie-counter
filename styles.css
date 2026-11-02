@@ -243,3 +243,13 @@ dialog.sheet > * { padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); 
   .summary { grid-template-columns: 112px 1fr; }
   .ring { width: 112px; height: 112px; }
 }
+
+/* replace a recognized food */
+.ci-swap { border: 0; background: none; color: var(--brand); padding: 6px 0 0; min-height: 36px; cursor: pointer; font-size: .9rem; }
+.ci-swap-panel { margin-top: 6px; }
+.ci-swap-panel .list { max-height: 240px; overflow-y: auto; }
+
+/* API key: masked text field (not a password field) with a show button */
+.key-row { display: flex; gap: 8px; margin-top: 4px; }
+.key-row input { flex: 1; min-width: 0; }
+input.masked { -webkit-text-security: disc; text-security: disc; }
