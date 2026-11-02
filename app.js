@@ -59,8 +59,11 @@ async function loadTarget() {
   const mode = await getSetting('targetMode', 'calc');
   const profile = await getSetting('profile', null);
   const manual = await getSetting('manualTarget', null);
+  // the calculated target uses the latest weigh-in; with none left (e.g. a typo was deleted), the
+  // weight entered in Settings. Weigh-ins never overwrite the profile, so deleting one always undoes it.
+  const latest = await db.weights.orderBy('date').last();
   if (mode === 'manual' && manual) state.target = manual;
-  else if (profile) state.target = dailyTarget(profile);
+  else if (profile) state.target = dailyTarget({ ...profile, weight: latest?.kg ?? profile.weight });
   else state.target = 2000;
 }
 
@@ -115,6 +118,9 @@ function builtText(iso) {
 let typedIn = null;
 document.addEventListener('focusin', () => { typedIn = null; });
 document.addEventListener('input', (e) => { typedIn = e.target; });
+// a submitted or committed field is no longer "mid-typing" (e.g. a weight saved with Enter keeps focus)
+document.addEventListener('submit', () => { typedIn = null; }, true);
+document.addEventListener('change', () => { typedIn = null; }, true);
 
 let localStore = null;
 try { localStore = window.localStorage; } catch { /* storage blocked */ }
@@ -989,7 +995,9 @@ async function saveTarget(ev) {
   else {
     const p = readProfile();
     await setSetting('profile', p);
-    if (!(await db.weights.count())) await put('weights', { date: isoDate(), kg: p.weight });
+    // a weight changed in Settings is today's weigh-in, so the target and the weight chart agree
+    const latest = await db.weights.orderBy('date').last();
+    if (!latest || latest.kg !== p.weight) await put('weights', { date: isoDate(), kg: p.weight });
   }
   await loadTarget();
   toast(`היעד נשמר: ${fmt(state.target)} קק״ל`);
@@ -1010,7 +1018,7 @@ async function exportBackup() {
 async function importBackup(file) {
   try {
     const data = parseBackup(await file.text());
-    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הנתונים בטלפון הזה יוחלפו, וכשהסנכרון פעיל גם במכשירים המחוברים (שינויים שנעשו אחרי הגיבוי נשמרים).`)) return;
+    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הפריטים מהגיבוי יחזרו, גם כאלה שנמחקו אחריו. שום דבר לא יימחק: מה שנוסף או נערך אחרי הגיבוי יישאר.`)) return;
     await restoreAll(data);
     await refreshMyFoods();
     await loadTarget();
@@ -1020,6 +1028,10 @@ async function importBackup(file) {
     toast('שגיאה בייבוא: ' + err.message);
   }
 }
+
+// The calculated target follows the latest remaining weigh-in: after saving, deleting (e.g. a typo
+// of 170 instead of 70) or undoing one, it matches what is left (Codex P2). See loadTarget.
+const followLatestWeight = () => loadTarget();
 
 // ---------- events ----------
 
@@ -1155,12 +1167,7 @@ function bind() {
     if (!(kg > 0)) return;
     await put('weights', { date: isoDate(), kg });
     $('#weight-input').value = '';
-    // the calculated target follows the latest weight
-    const profile = await getSetting('profile', null);
-    if (profile && profile.weight !== kg) {
-      await setSetting('profile', { ...profile, weight: kg });
-      await loadTarget();
-    }
+    await followLatestWeight();
     toast(`נשמר: ${kg} ק״ג`);
     renderWeights();
   };
@@ -1169,8 +1176,9 @@ function bind() {
     if (!b) return;
     const prev = await db.weights.get(b.dataset.delWeight);
     await remove('weights', b.dataset.delWeight);
+    await followLatestWeight();
     renderWeights();
-    if (prev) toast('השקילה נמחקה', async () => { await put('weights', prev); renderWeights(); });
+    if (prev) toast('השקילה נמחקה', async () => { await put('weights', prev); await followLatestWeight(); renderWeights(); });
   });
 
   $('#target-mode').addEventListener('click', (e) => {

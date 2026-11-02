@@ -171,25 +171,24 @@ test('nothing is sent without a code; disconnect keeps local data', async () => 
   assert.equal(await a.db.log.count(), 1);
 });
 
-test('restoreAll replaces data and syncs the deletions too', async () => {
+test('restoreAll merges: backup rows come back, nothing is deleted, numeric v1 ids are converted', async () => {
   const remote = fakeRemote();
   const a = device(remote);
   const code = generateCode();
   await a.sync.connect(code);
-  const keep = await a.store.put('entries', entry({ name: 'נשאר' }));
-  await a.store.put('entries', entry({ name: 'נמחק' }));
+  const kept = await a.store.put('entries', entry({ name: 'נשאר' }));
+  await a.store.put('entries', entry({ name: 'נוסף אחרי הגיבוי' }));
   await a.sync.syncNow();
 
-  // a v1 backup has numeric entry ids
-  await a.store.restoreAll({ entries: [{ ...keep }, { id: 7, date: '2026-10-20', meal: 'dinner', foodId: 't2', name: 'ישן', kcal: 100, ts: 5 }], myFoods: [], favorites: [], weights: [], settings: [] });
-  assert.deepEqual((await a.db.log.toArray()).map((e) => e.name).sort(), ['ישן', 'נשאר']);
+  // a v1 backup has numeric entry ids and does not contain the newer entry
+  await a.store.restoreAll({ entries: [{ ...kept }, { id: 7, date: '2026-10-20', meal: 'dinner', foodId: 't2', name: 'ישן', kcal: 100, ts: 5 }], myFoods: [], favorites: [], weights: [], settings: [] });
+  assert.deepEqual((await a.db.log.toArray()).map((e) => e.name).sort(), ['ישן', 'נוסף אחרי הגיבוי', 'נשאר']);
   await a.sync.syncNow();
 
   const b = device(remote);
   await b.sync.connect(code);
-  assert.deepEqual((await b.db.log.toArray()).map((e) => e.name).sort(), ['ישן', 'נשאר']);
+  assert.deepEqual((await b.db.log.toArray()).map((e) => e.name).sort(), ['ישן', 'נוסף אחרי הגיבוי', 'נשאר']);
 });
-
 test('upgrade from v1 keeps existing diary entries', async () => {
   const name = `legacy-${Date.now()}`;
   const old = new Dexie(name);
@@ -326,39 +325,85 @@ test('audit: disconnecting keeps unsent deletes, so they reach the cloud after r
   assert.equal(remote.rows.get(`${code}|entries|D`).data, null);
 });
 
-test('restoring an old backup on a syncing device: the cloud\'s newer edits and deletes win (Codex P1)', async () => {
+test('restoring an old backup on a syncing device keeps later work on every device (review #1, Codex P1)', async () => {
   const remote = fakeRemote();
   const a = device(remote);
   const b = device(remote);
   const code = generateCode();
   await a.sync.connect(code);
-  const kept = await a.store.put('entries', entry({ name: 'נערך', kcal: 248 }));
-  const gone = await a.store.put('entries', entry({ name: 'נמחק' }));
+  const edited = await a.store.put('entries', entry({ name: 'נערך', kcal: 248 }));
+  const deletedLater = await a.store.put('entries', entry({ name: 'נמחק בטעות' }));
   await a.sync.syncNow();
-  const backup = await a.store.dumpAll();                 // old backup, taken now
-
   await b.sync.connect(code);
-  await tick();
-  await b.store.put('entries', { ...(await b.db.log.get(kept.id)), kcal: 300 });   // edited elsewhere later
-  await b.store.remove('entries', gone.id);                                         // deleted elsewhere later
-  await b.sync.syncNow();
-  await a.sync.syncNow();
-  for (let i = 0; i < 3; i++) {                          // move the pull cursor well past those changes
-    await b.store.put('weights', { date: `2026-10-2${i}`, kg: 70 + i });
-    await b.sync.syncNow();
-    await a.sync.syncNow();
-  }
-  assert.equal((await a.db.log.get(kept.id)).kcal, 300);
+  const backup = await b.store.dumpAll();                // backup taken on B
 
-  await a.store.restoreAll(backup);                       // brings back the old versions locally
-  assert.equal((await a.db.log.get(kept.id)).kcal, 248);
-  await a.sync.syncNow();                                 // the server rejects them as stale
+  await tick();
+  await a.store.put('entries', { ...(await a.db.log.get(edited.id)), kcal: 300 });   // edited after the backup
+  const added = await a.store.put('entries', entry({ name: 'נוסף אחרי הגיבוי' }));   // added after the backup
+  await a.store.remove('entries', deletedLater.id);                                   // deleted after the backup
   await a.sync.syncNow();
-  assert.equal((await a.db.log.get(kept.id)).kcal, 300, 'newer cloud edit came back');
-  assert.equal(await a.db.log.get(gone.id), undefined, 'cloud delete came back');
-  assert.equal(await a.db.outbox.count(), 0);
+  for (let i = 0; i < 3; i++) {                          // move B's pull cursor well past those changes
+    await a.store.put('weights', { date: `2026-10-2${i}`, kg: 70 + i });
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+  }
+
+  await b.store.restoreAll(backup);
+  for (let i = 0; i < 2; i++) { await b.sync.syncNow(); await a.sync.syncNow(); }
+  for (const d of [a, b]) {
+    assert.equal((await d.db.log.get(edited.id)).kcal, 300, 'the newer edit is kept');
+    assert.ok(await d.db.log.get(added.id), 'the entry added after the backup is kept');
+    assert.ok(await d.db.log.get(deletedLater.id), 'the backup brings back the deleted entry');
+  }
+  assert.equal(await b.db.outbox.count(), 0);
 });
 
+test('a backup with a long barcode (possible on older versions) restores (review #2)', async () => {
+  const a = device(fakeRemote());
+  const long = '0'.repeat(22);
+  await a.store.restoreAll({ entries: [], myFoods: [{ id: 'b' + long, barcode: long, n: 'מוצר', kcal: 100, p: 1, c: 2, f: 3, m: [] }], favorites: [], weights: [], settings: [] });
+  assert.ok(await a.db.myFoods.get('b' + long));
+});
+
+test('rows deleted on this phone do not come back after switching codes X -> Y -> X (review #3)', async () => {
+  const remote = fakeRemote();
+  const x = generateCode();
+  const y = generateCode();
+  const a = device(remote);
+  await a.sync.connect(x);
+  const e = await a.store.put('entries', entry({ name: 'למחיקה' }));
+  await a.sync.syncNow();
+  remote.online = false;
+  await a.store.remove('entries', e.id);                 // deleted offline
+  await a.sync.disconnect();
+  remote.online = true;
+  await a.sync.connect(y);                               // the kept delete is dropped here (other vault)
+  await a.sync.disconnect();
+  await a.sync.connect(x);                               // back to X: the cloud still has the entry
+  assert.equal(await a.db.log.get(e.id), undefined, 'not resurrected');
+  await a.sync.syncNow();
+  assert.equal(remote.rows.get(`${x}|entries|${e.id}`).data, null, 'and the delete reaches X');
+});
+
+test('unstamped rows an older app already pushed and lost are re-sent once (review #4)', async () => {
+  const remote = fakeRemote();
+  const name = `legacy-lost-${Date.now()}`;
+  const old = new Dexie(name);
+  old.version(1).stores({ entries: '++id, date, meal, foodId, ts', myFoods: 'id, barcode, n', favorites: 'foodId', weights: 'date', settings: 'key' });
+  await old.weights.put({ date: '2026-09-01', kg: 75 });
+  old.close();
+  const store = createStore(name, Dexie);
+  const sync = createSync(store, remote, { debounceMs: 60000 });
+  devices.push({ store, sync });
+  const code = generateCode();
+  // the state an older app left: connected, the row was pushed with ts 0, rejected and dropped
+  await store.db.meta.put({ key: 'syncCode', value: code });
+  await sync.syncNow();
+  assert.ok(remote.rows.get(`${code}|weights|2026-09-01`)?.data, 'the lost weigh-in reached the cloud');
+  const calls = remote.calls;
+  await sync.syncNow();
+  assert.ok(remote.calls - calls <= 2, 'queued only once');
+});
 test('undo after a synced delete survives, even when the row came from a phone whose clock is ahead (Codex P2)', async () => {
   const remote = fakeRemote();
   const a = device(remote);

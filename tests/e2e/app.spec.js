@@ -440,3 +440,30 @@ test('editing an entry whose unit this device does not know keeps its grams', as
   await page.getByTestId('confirm-save').click();
   await expect(page.getByTestId('eaten')).toHaveText('159');
 });
+
+test('deleting a mistyped weigh-in restores the calculated target (Codex P2)', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('nav-settings').click();
+  await page.getByTestId('p-sex').selectOption('male');
+  await page.getByTestId('p-age').fill('30');
+  await page.getByTestId('p-height').fill('175');
+  await page.getByTestId('p-weight').fill('70');
+  await page.getByTestId('p-activity').selectOption('1.55');
+  await page.getByTestId('p-goal').selectOption('-500');
+  await page.getByTestId('target-save').click();
+  await page.getByTestId('nav-today').click();
+  const normal = await page.getByTestId('target').textContent();
+
+  await page.getByTestId('nav-history').click();
+  await page.getByTestId('weight-input').fill('170');          // typo for 70
+  await page.getByTestId('weight-save').click();
+  await expect(page.getByTestId('weight-row')).toContainText('170');
+  await page.getByTestId('nav-today').click();
+  await expect(page.getByTestId('target')).not.toHaveText(normal);
+
+  await page.getByTestId('nav-history').click();
+  await page.locator('[data-del-weight]').first().click();      // delete the typo
+  await expect(page.getByTestId('weight-list')).not.toContainText('170');
+  await page.getByTestId('nav-today').click();
+  await expect(page.getByTestId('target')).toHaveText(normal);
+});
