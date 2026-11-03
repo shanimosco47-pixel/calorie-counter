@@ -137,9 +137,12 @@ const updater = createUpdater({
   cacheExists: async (version) => { try { return await caches.has(`kalorit-app-${version}`); } catch { return false; } },
   isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
     || (state.view === 'add' && $('#search').value.trim() !== '')
-    || (typedIn && typedIn === document.activeElement),   // mid-typing in a field (settings, weight, sync code, key)
+    || (typedIn && typedIn === document.activeElement)   // mid-typing in a field (settings, weight, sync code, key)
+    // the chat lives in memory: a reload would drop its replies and their undo / edit buttons
+    || (state.view === 'chat' && (chat.msgs.some((m) => m.ids && !m.undone) || $('#chat-input').value.trim() !== '')),
   // the camera or picker is open over the app, a paid recognition is running, or its items await approval
-  keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming || !!photo.stream,
+  // (or a chat message is being logged)
+  keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming || !!photo.stream || chat.busy > 0,
   reload: () => location.reload(),
   notify: (event, info) => {
     if (event === 'updated') toast(`האפליקציה עודכנה ✓ ${builtText(info.builtAt)}`);
@@ -191,6 +194,7 @@ const sync = createSync(store, supabaseRemote(), {
     if (state.view === 'today') renderToday();
     else if (state.view === 'history') renderHistory();
     else if (state.view === 'add') renderResults();
+    else if (state.view === 'chat') renderChat();
   },
 });
 window.kaloritSync = sync;   // for tests
@@ -271,7 +275,8 @@ function show(view, { fromHistory = false } = {}) {
   if (view === 'add') { renderMealPicker(); renderResults(); }
   if (view === 'history') renderHistory();
   if (view === 'settings') renderSettings();
-  if (view === 'chat') { renderChat(); if (matchMedia('(pointer: fine)').matches) $('#chat-input').focus(); }
+  document.body.dataset.view = view;
+  if (view === 'chat') { chat.scrolledFor = ''; fitChatInput(); renderChat(); if (matchMedia('(pointer: fine)').matches) $('#chat-input').focus(); }
   else stopListening();
 }
 
@@ -551,7 +556,7 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
         const prev = await db.log.get(editId);
         if (prev) {
           await remove('entries', editId);
-          toast('הפריט נמחק', async () => { await put('entries', prev); renderToday(); });
+          toast('הפריט נמחק', async () => { await put('entries', prev); renderToday(); if (state.view === 'chat') renderChat(); });
         }
         renderToday();
         return resolve([]);
@@ -795,26 +800,31 @@ function closePhoto() {
 // The owner's choice: the chat logs straight to the diary (no confirm sheet); every reply shows what was
 // saved, with undo and edit. Messages live in memory only: never stored, never synced.
 // msgs: { id, me?, text?, ids?, undone?, error?, pending?, settings? }
-const chat = { msgs: [], ctrl: null, seq: 0, rec: null, listening: false };
+const chat = { msgs: [], seq: 0, busy: 0, queue: Promise.resolve(), rec: null, listening: false, renderGen: 0, scrolledFor: '' };
 
-// Saves resolved items as diary entries; returns the saved entry ids, in order.
+// Saves resolved items as diary entries. Returns the saved entry ids in order, which of them carry
+// Claude's own estimate, and the error that stopped saving partway, if any (what was saved stays saved).
 async function saveItemsDirect(items, now = new Date()) {
   const today = isoDate(now);
-  const ids = [];
-  for (const [i, r] of items.entries()) {
-    const grams = gramsFor(r.food, r.amount, r.unit);
-    if (!(grams > 0)) continue;
-    // a food from outside the database (Claude's estimate) is kept, so the entry stays editable
-    if (!String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
-    const entry = {
-      id: newId(), date: addDays(today, r.dayOffset || 0), meal: r.meal || mealForHour(now.getHours()),
-      foodId: r.food.id, name: r.food.n, amount: r.amount, unit: r.unit, grams, ...nutrientsFor(r.food, grams),
-      ts: Date.now() + i,   // keeps the spoken order in the diary
-    };
-    ids.push((await put('entries', entry)).id);
-  }
-  await refreshMyFoods();
-  return ids;
+  const out = { ids: [], estimated: [], error: null };
+  try {
+    for (const [i, r] of items.entries()) {
+      const grams = gramsFor(r.food, r.amount, r.unit);
+      if (!(grams > 0)) continue;
+      // a food from outside the database (Claude's estimate) is kept, so the entry stays editable
+      if (!String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
+      const entry = {
+        id: newId(), date: addDays(today, r.dayOffset || 0), meal: r.meal || mealForHour(now.getHours()),
+        foodId: r.food.id, name: r.food.n, amount: r.amount, unit: r.unit, grams, ...nutrientsFor(r.food, grams),
+        ts: Date.now() + i,   // keeps the spoken order in the diary
+      };
+      const { id } = await put('entries', entry);
+      out.ids.push(id);
+      if (r.estimated) out.estimated.push(id);
+    }
+  } catch (e) { out.error = e; }
+  await refreshMyFoods().catch(() => {});
+  return out;
 }
 
 function dayWord(date) {
@@ -825,10 +835,12 @@ function dayWord(date) {
 }
 
 async function renderChat() {
+  const gen = ++chat.renderGen;
   const log = $('#chat-log');
   const intro = log.firstElementChild.outerHTML;
   const all = chat.msgs.flatMap((m) => m.ids || []);
   const entries = new Map((await db.log.bulkGet(all)).filter(Boolean).map((e) => [e.id, e]));
+  if (gen !== chat.renderGen) return;   // a newer render started meanwhile: it paints the current state
   const html = chat.msgs.map((m) => {
     if (m.me) return `<div class="bubble me" data-testid="chat-me">${esc(m.text)}</div>`;
     if (m.pending) return `<div class="bubble bot pending" data-testid="chat-pending">רושם…</div>`;
@@ -858,50 +870,62 @@ async function renderChat() {
     </div>`;
   }).join('');
   log.innerHTML = intro + html;
-  if (state.view === 'chat') log.lastElementChild?.scrollIntoView({ block: 'end' });
+  // the screen-reader status speaks only the newest reply, not the whole chat again
+  const last = chat.msgs[chat.msgs.length - 1];
+  const status = last && !last.me && !last.pending ? log.lastElementChild.innerText.replace(/\s+/g, ' ').replace(/ עריכה/g, '').trim() : '';
+  if (status && $('#chat-status').textContent !== status) $('#chat-status').textContent = status;
+  // the log's bottom padding keeps the newest bubble above the composer and the nav
+  // (only when something new arrived, so undo or edit higher up does not jump the screen)
+  const key = `${last?.id}:${!!last?.pending}`;
+  if (state.view === 'chat' && key !== chat.scrolledFor) {
+    chat.scrolledFor = key;
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  }
 }
 
-async function sendChat(text) {
+// Messages are handled one at a time, in the order sent: a second message while the first is still
+// being logged waits its turn (people send in pieces: "פיתה", then "וגם קפה"). Nothing is ever aborted,
+// so a request that was paid for is always logged and always answered.
+function sendChat(text) {
   text = String(text || '').trim();
-  if (!text) return;
+  if (!text) return chat.queue;
   stopListening();
   $('#chat-input').value = '';
   fitChatInput();
-  chat.ctrl?.abort();
-  const ctrl = chat.ctrl = new AbortController();
-  chat.msgs = chat.msgs.filter((m) => !m.pending);
   chat.msgs.push({ id: ++chat.seq, me: true, text });
   const pending = { id: ++chat.seq, pending: true };
   chat.msgs.push(pending);
-  await renderChat();
+  chat.busy++;
+  renderChat();
+  chat.queue = chat.queue.then(() => logChat(text, pending)).finally(() => { chat.busy--; });
+  return chat.queue;
+}
+
+async function logChat(text, pending) {
   const finish = (m) => {
-    if (ctrl.signal.aborted) return;
-    chat.ctrl = null;
     const at = chat.msgs.indexOf(pending);
     if (at >= 0) chat.msgs.splice(at, 1, { id: pending.id, ...m });
     renderChat();
+    if (state.view === 'today') renderToday();
   };
+  let saved = null;
   try {
     const apiKey = await getSetting('apiKey', '');
     if (!apiKey) throw new VisionError('no_key', 'no key');
     const now = new Date();
-    const { items: recognized, reply } = await analyzeText({ apiKey, text, now, signal: ctrl.signal });
-    if (ctrl.signal.aborted) return;
+    const { items: recognized, reply } = await analyzeText({ apiKey, text, now });
     if (!recognized.length) { finish({ text: reply || CHAT_ERROR_TEXT.empty }); return; }
-    const items = resolveItems(recognized);
-    const ids = await saveItemsDirect(items, now);
-    if (!ids.length) { finish({ text: reply || CHAT_ERROR_TEXT.empty }); return; }
-    // which saved entries carry Claude's own estimate (not found in the database)
-    const estimated = [];
-    let k = 0;
-    for (const r of items) { if (gramsFor(r.food, r.amount, r.unit) > 0) { if (r.estimated) estimated.push(ids[k]); k++; } }
-    finish({ text: reply, ids, estimated });
-    if (state.view === 'today') renderToday();
+    saved = await saveItemsDirect(resolveItems(recognized), now);
+    if (saved.error) throw saved.error;
+    if (!saved.ids.length) { finish({ text: reply || CHAT_ERROR_TEXT.empty }); return; }
+    finish({ text: reply, ids: saved.ids, estimated: saved.estimated });
   } catch (e) {
-    if (ctrl.signal.aborted || e?.code === 'cancelled') return;
-    const code = e instanceof VisionError ? e.code : 'api';
+    const code = e instanceof VisionError ? e.code : 'local';
     console.warn('chat logging failed', code, e?.message || e);
-    finish({ error: true, text: CHAT_ERROR_TEXT[code] || CHAT_ERROR_TEXT.api, settings: code === 'no_key' || code === 'auth' });
+    const text = CHAT_ERROR_TEXT[code] || CHAT_ERROR_TEXT.api;
+    // part of the message was already saved when storage failed: show it, with its undo
+    if (saved?.ids.length) finish({ text: CHAT_ERROR_TEXT.partial, ids: saved.ids, estimated: saved.estimated });
+    else finish({ error: true, text, settings: code === 'no_key' || code === 'auth' });
   }
 }
 
@@ -930,6 +954,9 @@ function fitChatInput() {
   const el = $('#chat-input');
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight + 2, 120) + 'px';
+  // the log's bottom padding and the toast follow the composer's real height
+  const h = $('#chat-form').offsetHeight;
+  if (h) document.documentElement.style.setProperty('--composer-h', h + 'px');
 }
 
 // Voice: the browser's speech recognition (on Chrome for Android, Google's speech service turns the

@@ -127,3 +127,74 @@ test('chat: speaking fills the box and sends when the speech ends', async ({ pag
   expect(body.messages[0].content).toContain('הבוקר אכלתי פיתה עם גבינה לבנה');
   await expect(page.getByTestId('chat-mic')).toHaveAttribute('aria-pressed', 'false');
 });
+
+test('chat: a second message sent while the first is logging waits its turn; both are logged', async ({ page }) => {
+  const order = [];
+  await page.route('https://api.anthropic.com/**', async (route) => {
+    const text = route.request().postDataJSON().messages[0].content;
+    const first = text.includes('פיתה');
+    order.push(first ? 'first' : 'second');
+    if (first) await new Promise((r) => setTimeout(r, 800));   // the first answer is slow
+    return route.fulfill({ json: answer([first
+      ? item({ name: 'פיתה', query: 'פיתה', grams: 100, kcal_per_100g: 250, meal: 'breakfast' })
+      : item({ name: 'אורז לבן', query: 'אורז לבן מבושל', grams: 150, kcal_per_100g: 130, meal: 'lunch' })]) });
+  });
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('פיתה');
+  await page.getByTestId('chat-send').click();
+  await page.getByTestId('chat-input').fill('וגם אורז');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-reply')).toHaveCount(2);
+  expect(order).toEqual(['first', 'second']);   // one at a time, in order
+  expect((await entries(page)).map((e) => e.meal)).toEqual(['breakfast', 'lunch']);
+  await expect(page.getByTestId('chat-pending')).toHaveCount(0);
+});
+
+test('chat: no meal said uses the meal for now; a food not in the database is marked estimated; 0 g is skipped', async ({ page }) => {
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: answer([
+    item({ name: 'מאפה פלאפלוני', query: 'מאפה פלאפלוני', grams: 80, kcal_per_100g: 333 }),
+    item({ name: 'מים', query: 'מים', grams: 0, kcal_per_100g: 0 }),
+  ]) }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('אכלתי מאפה פלאפלוני ושתיתי מים');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  await expect(page.getByTestId('chat-item')).toContainText('ערכים משוערים');
+  const meal = await page.evaluate(async () => { const { mealForHour } = await import('./lib/calc.js'); return mealForHour(new Date().getHours()); });
+  expect((await entries(page)).map((e) => [e.meal, e.kcal])).toEqual([[meal, 266]]);
+});
+
+test('chat: the newest reply\'s undo stays above the composer after several messages', async ({ page }) => {
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: breakfast }));
+  await withKey(page);
+  for (let i = 0; i < 4; i++) {
+    await page.getByTestId('chat-input').fill(`פיתה ${i}`);
+    await page.getByTestId('chat-send').click();
+    await expect(page.getByTestId('chat-reply')).toHaveCount(i + 1);
+  }
+  const hit = await page.getByTestId('chat-undo').last().evaluate((b) => {
+    const r = b.getBoundingClientRect();
+    return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === b;
+  });
+  expect(hit).toBe(true);
+});
+
+test('chat: speech that ends without a final result still sends what was heard', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.SpeechRecognition = class {
+      start() {
+        setTimeout(() => {
+          this.onresult?.({ results: [Object.assign([{ transcript: 'הבוקר אכלתי פיתה' }], { isFinal: false })] });
+          setTimeout(() => this.onend?.(), 100);
+        }, 50);
+      }
+      abort() {} stop() {}
+    };
+  });
+  let body;
+  await page.route('https://api.anthropic.com/**', (route) => { body = route.request().postDataJSON(); return route.fulfill({ json: breakfast }); });
+  await withKey(page);
+  await page.getByTestId('chat-mic').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(2);
+  expect(body.messages[0].content).toContain('הבוקר אכלתי פיתה');
+});

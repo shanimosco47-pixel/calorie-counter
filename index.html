@@ -85,7 +85,8 @@
 
     <!-- Chat: tell the app what you ate, typed or by voice; it logs it straight away -->
     <section class="view" id="view-chat" data-testid="view-chat" hidden>
-      <div class="chat-log" id="chat-log" data-testid="chat-log" aria-live="polite">
+      <p class="sr-only" id="chat-status" role="status"></p>
+      <div class="chat-log" id="chat-log" data-testid="chat-log">
         <div class="bubble bot">כתבו או אמרו מה אכלתם, ואני ארשום ליומן. למשל: <q>הבוקר אכלתי פיתה עם גבינה לבנה</q> או <q>אתמול בערב שניצל עם אורז</q>.</div>
       </div>
       <form class="chat-form" id="chat-form" data-testid="chat-form">

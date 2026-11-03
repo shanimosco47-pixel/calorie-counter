@@ -240,7 +240,9 @@ dialog.sheet > * { padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); 
 @media (prefers-color-scheme: dark) { .toast button { color: #0f766e; } }
 
 /* chat */
-.chat-log { display: flex; flex-direction: column; gap: 10px; padding-bottom: 76px; }
+.chat-log { display: flex; flex-direction: column; gap: 10px; padding-bottom: calc(var(--composer-h, 64px) + 8px); }
+body[data-view="chat"] .toast { bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + var(--composer-h, 64px) + 12px); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .bubble { max-width: 88%; padding: 10px 14px; border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); overflow-wrap: anywhere; }
 .bubble.me { align-self: flex-start; background: var(--brand); color: var(--brand-ink); border-end-start-radius: 4px; white-space: pre-wrap; }
 .bubble.bot { align-self: flex-end; border-end-end-radius: 4px; }
