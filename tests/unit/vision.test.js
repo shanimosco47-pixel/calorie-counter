@@ -138,3 +138,55 @@ test('alternative terms: a hit must relate to what was seen; tiny units are not 
   const seeds = parseResponse(reply([{ ...item, grams: 30, unit_name: 'צימוק', unit_count: 60, unit_grams: 0.5 }]))[0];
   assert.deepEqual(pickFood(seeds, [], { makeId: () => 'aS' }).food.m, [['u1', 0.5, 'צימוק']]);
 });
+
+// ---------- chat ----------
+import { buildTextRequest, parseTextResponse, analyzeText, TEXT_RESPONSE_SCHEMA } from '../../lib/vision.js';
+
+const textReply = (items, reply = '') => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ items, reply }) }] });
+
+test('text request: the message and local time in one user turn, structured output with meal and day', () => {
+  const r = buildTextRequest('הבוקר אכלתי פיתה עם גבינה לבנה', { now: new Date(2026, 10, 3, 9, 30) });
+  assert.equal(r.model, 'claude-haiku-5-5');
+  assert.equal(typeof r.messages[0].content, 'string');
+  assert.match(r.messages[0].content, /הבוקר אכלתי פיתה עם גבינה לבנה$/);
+  assert.match(r.messages[0].content, /09:30/);
+  assert.deepEqual(r.output_config.format, { type: 'json_schema', schema: TEXT_RESPONSE_SCHEMA });
+  const it = TEXT_RESPONSE_SCHEMA.properties.items.items;
+  assert.ok(it.required.includes('meal') && it.required.includes('day_offset'));
+  assert.equal(it.additionalProperties, false);
+  assert.equal(r.temperature, undefined);
+  // the photo schema is unchanged
+  assert.equal(RESPONSE_SCHEMA.properties.items.items.properties.meal, undefined);
+});
+
+test('text parse: meal and day offset are validated; reply is kept', () => {
+  const { items, reply } = parseTextResponse(textReply([
+    { ...item, name: 'פיתה', meal: 'breakfast', day_offset: 0 },
+    { ...item, name: 'שניצל', meal: 'brunch', day_offset: -1 },
+    { ...item, name: 'עוגה', meal: '', day_offset: 3 },
+    { ...item, name: 'ישן', meal: 'dinner', day_offset: -40 },
+    { ...item, name: 'ריק', grams: 0, meal: 'lunch', day_offset: 0 },
+  ], 'בתיאבון'));
+  assert.equal(reply, 'בתיאבון');
+  assert.deepEqual(items.map((i) => [i.name, i.meal, i.dayOffset]), [
+    ['פיתה', 'breakfast', 0], ['שניצל', null, -1], ['עוגה', null, 0], ['ישן', 'dinner', -7],
+  ]);
+  assert.equal(items[0].grams, 150);
+});
+
+test('text parse: not about food gives no items and the reply; refusal and junk raise', () => {
+  assert.deepEqual(parseTextResponse(textReply([], 'מה אכלת?')), { items: [], reply: 'מה אכלת?' });
+  assert.throws(() => parseTextResponse({ stop_reason: 'refusal', content: [] }), (e) => e.code === 'refusal');
+  assert.throws(() => parseTextResponse({ content: [{ type: 'text', text: '{' }] }), (e) => e.code === 'bad_output');
+});
+
+test('analyzeText: sends the key, maps HTTP errors like photos', async () => {
+  let sent;
+  const ok = async (url, init) => { sent = init; return { ok: true, json: async () => textReply([{ ...item, meal: 'lunch', day_offset: 0 }]) }; };
+  const res = await analyzeText({ apiKey: 'sk-ant-x', text: 'אורז', fetchImpl: ok });
+  assert.equal(sent.headers['x-api-key'], 'sk-ant-x');
+  assert.equal(res.items[0].meal, 'lunch');
+  await assert.rejects(analyzeText({ apiKey: '', text: 'x' }), (e) => e.code === 'no_key');
+  const bad = async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'invalid x-api-key' } }) });
+  await assert.rejects(analyzeText({ apiKey: 'k', text: 'x', fetchImpl: bad }), (e) => e.code === 'auth');
+});

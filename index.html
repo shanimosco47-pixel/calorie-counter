@@ -83,6 +83,18 @@
       <p class="muted center" id="results-empty" hidden></p>
     </section>
 
+    <!-- Chat: tell the app what you ate, typed or by voice; it logs it straight away -->
+    <section class="view" id="view-chat" data-testid="view-chat" hidden>
+      <div class="chat-log" id="chat-log" data-testid="chat-log" aria-live="polite">
+        <div class="bubble bot">כתבו או אמרו מה אכלתם, ואני ארשום ליומן. למשל: <q>הבוקר אכלתי פיתה עם גבינה לבנה</q> או <q>אתמול בערב שניצל עם אורז</q>.</div>
+      </div>
+      <form class="chat-form" id="chat-form" data-testid="chat-form">
+        <button type="button" class="icon-btn mic" id="chat-mic" data-testid="chat-mic" aria-label="הקלטה" aria-pressed="false" hidden>🎤</button>
+        <textarea id="chat-input" data-testid="chat-input" rows="1" maxlength="1000" placeholder="מה אכלת?" aria-label="מה אכלת?" enterkeyhint="send"></textarea>
+        <button class="btn" id="chat-send" data-testid="chat-send">שליחה</button>
+      </form>
+    </section>
+
     <!-- History -->
     <section class="view" id="view-history" data-testid="view-history" hidden>
       <div class="card">
@@ -206,11 +218,12 @@
   <nav class="bottomnav" aria-label="ניווט">
     <button data-view="today" aria-current="page" data-testid="nav-today"><span>🍽️</span>היום</button>
     <button data-view="add" data-testid="nav-add"><span>＋</span>הוספה</button>
+    <button data-view="chat" data-testid="nav-chat"><span>💬</span>צ׳אט</button>
     <button data-view="history" data-testid="nav-history"><span>📈</span>היסטוריה</button>
     <button data-view="settings" data-testid="nav-settings"><span>⚙️</span>הגדרות</button>
   </nav>
 
-  <!-- Confirm items: the single entry point for logging food (search, barcode, photos) -->
+  <!-- Confirm items: the entry point for logging food from search, barcode and photos (the chat logs directly, with undo) -->
   <dialog class="sheet" id="confirm-sheet" data-testid="confirm-sheet">
     <form method="dialog" id="confirm-form">
       <header class="sheet-head"><h2 id="confirm-title">הוספה ליומן</h2><button type="button" class="icon-btn" id="confirm-close" aria-label="סגירה">✕</button></header>
