@@ -121,3 +121,8 @@ test('audit 2: plural forms never beat what was typed', () => {
   assert.match(top('פירה'), /פירה/);
   assert.match(top('לחמנייה'), /^לחמניה קלה/);
 });
+
+test('long queries keep their trailing qualifiers (Codex P2)', () => {
+  const top = matchFood('גבינה לבנה עם זיתים 9%', index, { limit: 10 });
+  assert.ok(top.length === 0 || top.every((f) => /9%/.test(f.n)), top.map((f) => f.n).join(' | '));
+});

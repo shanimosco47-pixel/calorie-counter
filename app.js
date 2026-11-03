@@ -59,8 +59,11 @@ async function loadTarget() {
   const mode = await getSetting('targetMode', 'calc');
   const profile = await getSetting('profile', null);
   const manual = await getSetting('manualTarget', null);
+  // the calculated target uses the latest weigh-in; with none left (e.g. a typo was deleted), the
+  // weight entered in Settings. Weigh-ins never overwrite the profile, so deleting one always undoes it.
+  const latest = await db.weights.orderBy('date').last();
   if (mode === 'manual' && manual) state.target = manual;
-  else if (profile) state.target = dailyTarget(profile);
+  else if (profile) state.target = dailyTarget({ ...profile, weight: latest?.kg ?? profile.weight });
   else state.target = 2000;
 }
 
@@ -122,6 +125,9 @@ window.addEventListener('unhandledrejection', (e) => {
   if (e.reason?.name === 'AbortError' && /play\(\) request was interrupted/.test(e.reason?.message || '')) e.preventDefault();
 });
 document.addEventListener('input', (e) => { typedIn = e.target; });
+// a submitted or committed field is no longer "mid-typing" (e.g. a weight saved with Enter keeps focus)
+document.addEventListener('submit', () => { typedIn = null; }, true);
+document.addEventListener('change', () => { typedIn = null; }, true);
 
 let localStore = null;
 try { localStore = window.localStorage; } catch { /* storage blocked */ }
@@ -953,7 +959,12 @@ async function renderSettings() {
   const p = (await getSetting('profile', null)) || { sex: 'female', age: '', height: '', weight: '', activity: 1.375, goal: -500 };
   $('#p-activity').innerHTML = ACTIVITY.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
   $('#p-goal').innerHTML = GOALS.map((g) => `<option value="${g.id}">${g.label}</option>`).join('');
-  $('#p-sex').value = p.sex; $('#p-age').value = p.age; $('#p-height').value = p.height; $('#p-weight').value = p.weight;
+  $('#p-sex').value = p.sex; $('#p-age').value = p.age; $('#p-height').value = p.height;
+  // the current weight is the latest weigh-in (History); remember what was shown, so saving other
+  // settings does not record it again as today's weigh-in
+  const latestWeigh = await db.weights.orderBy('date').last();
+  $('#p-weight').value = latestWeigh?.kg ?? p.weight;
+  $('#p-weight').dataset.shown = $('#p-weight').value;
   $('#p-activity').value = String(p.activity); $('#p-goal').value = String(p.goal);
   $('#manual-target').value = (await getSetting('manualTarget', null)) || state.target;
   $('#api-key').value = (await getSetting('apiKey', '')) || '';
@@ -996,8 +1007,17 @@ async function saveTarget(ev) {
   if (mode === 'manual') await setSetting('manualTarget', Number($('#manual-target').value));
   else {
     const p = readProfile();
+    // the weight field shows the latest weigh-in. Edited: it is today's weigh-in and the new profile
+    // weight. Not edited: the profile keeps its own weight and the weigh-ins stay as they are, so
+    // saving other settings never changes them, and deleting a mistyped weigh-in later still falls
+    // back to the right value (Codex P2 / review)
+    const prev = await getSetting('profile', null);
+    const edited = $('#p-weight').value !== ($('#p-weight').dataset.shown ?? '');
+    if (!edited && prev?.weight > 0) p.weight = prev.weight;
     await setSetting('profile', p);
-    if (!(await db.weights.count())) await put('weights', { date: isoDate(), kg: p.weight });
+    const latest = await db.weights.orderBy('date').last();
+    if (p.weight > 0 && (!latest || (edited && latest.kg !== p.weight))) await put('weights', { date: isoDate(), kg: p.weight });
+    $('#p-weight').dataset.shown = $('#p-weight').value;
   }
   await loadTarget();
   toast(`היעד נשמר: ${fmt(state.target)} קק״ל`);
@@ -1018,7 +1038,14 @@ async function exportBackup() {
 async function importBackup(file) {
   try {
     const data = parseBackup(await file.text());
-    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הנתונים יחזרו למצב שבגיבוי, וכשהסנכרון פעיל גם במכשירים המחוברים: פריטים שנוספו אחרי הגיבוי יימחקו. עריכות שנעשו אחרי הגיבוי לפריטים שבו יישמרו.`)) return;
+    // with sync on, take in other phones' changes first: restore then knows about their deletes
+    let offlineNote = '';
+    if ((await sync.status()).code) {
+      toast('מסנכרן לפני השחזור…');
+      const res = await sync.syncNow();
+      if (res?.error) offlineNote = ' אין חיבור לענן כרגע: פריטים שנמחקו בטלפון אחר אולי לא יחזרו.';
+    }
+    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הפריטים מהגיבוי יחזרו, גם כאלה שנמחקו אחריו. שום דבר לא יימחק: מה שנוסף או נערך אחרי הגיבוי יישאר.${offlineNote}`)) return;
     await restoreAll(data);
     await refreshMyFoods();
     await loadTarget();
@@ -1028,6 +1055,10 @@ async function importBackup(file) {
     toast('שגיאה בייבוא: ' + err.message);
   }
 }
+
+// The calculated target follows the latest remaining weigh-in: after saving, deleting (e.g. a typo
+// of 170 instead of 70) or undoing one, it matches what is left (Codex P2). See loadTarget.
+const followLatestWeight = () => loadTarget();
 
 // ---------- events ----------
 
@@ -1164,12 +1195,7 @@ function bind() {
     if (!(kg > 0)) return;
     await put('weights', { date: isoDate(), kg });
     $('#weight-input').value = '';
-    // the calculated target follows the latest weight
-    const profile = await getSetting('profile', null);
-    if (profile && profile.weight !== kg) {
-      await setSetting('profile', { ...profile, weight: kg });
-      await loadTarget();
-    }
+    await followLatestWeight();
     toast(`נשמר: ${kg} ק״ג`);
     renderWeights();
   };
@@ -1178,8 +1204,9 @@ function bind() {
     if (!b) return;
     const prev = await db.weights.get(b.dataset.delWeight);
     await remove('weights', b.dataset.delWeight);
+    await followLatestWeight();
     renderWeights();
-    if (prev) toast('השקילה נמחקה', async () => { await put('weights', prev); renderWeights(); });
+    if (prev) toast('השקילה נמחקה', async () => { await put('weights', prev); await followLatestWeight(); renderWeights(); });
   });
 
   $('#target-mode').addEventListener('click', (e) => {
