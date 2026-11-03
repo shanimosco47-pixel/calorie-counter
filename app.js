@@ -7,11 +7,11 @@ import {
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
-import { analyzePhoto, pickFood, amountFor, VisionError, ERROR_TEXT, NO_RETRY } from './lib/vision.js';
+import { analyzePhoto, analyzeText, pickFood, amountFor, VisionError, ERROR_TEXT, CHAT_ERROR_TEXT, NO_RETRY } from './lib/vision.js';
 import { BUILD } from './build-info.js';
 import { createUpdater } from './lib/update.js';
 
-export const APP_VERSION = '1.11.0';
+export const APP_VERSION = '1.12.0';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -151,9 +151,12 @@ const updater = createUpdater({
     || (state.view === 'add' && $('#search').value.trim() !== '')
     || (typedIn && typedIn === document.activeElement)   // mid-typing in a field (settings, weight, sync code, key)
     // a key typed or pasted but not saved yet, even after tapping "show" or leaving to compare it
-    || ($('#api-key') && $('#api-key').value.trim() !== savedApiKey),
+    || ($('#api-key') && $('#api-key').value.trim() !== savedApiKey)
+    // the chat lives in memory: a reload would drop its replies and their undo / edit buttons
+    || (state.view === 'chat' && (chat.msgs.some((m) => m.ids && !m.undone) || $('#chat-input').value.trim() !== '')),
   // the camera or picker is open over the app, a paid recognition is running, or its items await approval
-  keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming || !!photo.stream,
+  // (or a chat message is being logged)
+  keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming || !!photo.stream || chat.busy > 0,
   reload: () => location.reload(),
   notify: (event, info) => {
     if (event === 'updated') toast(`האפליקציה עודכנה ✓ ${builtText(info.builtAt)}`);
@@ -205,6 +208,7 @@ const sync = createSync(store, supabaseRemote(), {
     if (state.view === 'today') renderToday();
     else if (state.view === 'history') renderHistory();
     else if (state.view === 'add') renderResults();
+    else if (state.view === 'chat') renderChat();
   },
 });
 window.kaloritSync = sync;   // for tests
@@ -285,6 +289,9 @@ function show(view, { fromHistory = false } = {}) {
   if (view === 'add') { renderMealPicker(); renderResults(); }
   if (view === 'history') renderHistory();
   if (view === 'settings') renderSettings();
+  document.body.dataset.view = view;
+  if (view === 'chat') { chat.scrolledFor = ''; fitChatInput(); renderChat(); if (matchMedia('(pointer: fine)').matches) $('#chat-input').focus(); }
+  else stopListening();
 }
 
 function renderDate() {
@@ -563,7 +570,7 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
         const prev = await db.log.get(editId);
         if (prev) {
           await remove('entries', editId);
-          toast('הפריט נמחק', async () => { await put('entries', prev); renderToday(); });
+          toast('הפריט נמחק', async () => { await put('entries', prev); renderToday(); if (state.view === 'chat') renderChat(); });
         }
         renderToday();
         return resolve([]);
@@ -578,7 +585,7 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
         };
         if (editId) {
           const prev = await db.log.get(editId);
-          await put('entries', { ...prev, ...entry, id: editId, ts: prev?.ts ?? entry.ts });
+          await put('entries', { ...prev, ...entry, id: editId, date: prev?.date ?? entry.date, ts: prev?.ts ?? entry.ts });
           ids.push(editId);
         } else ids.push((await put('entries', { id: newId(), ...entry })).id);
       }
@@ -735,6 +742,23 @@ function forgetPhoto() {
   $('#photo-preview').removeAttribute('src');
 }
 
+// Recognized items (photo or chat) to diary foods: the database food when one fits, else Claude's estimate.
+function resolveItems(recognized) {
+  return recognized.map((it, i) => {
+    // the primary search term, then each alternative term Claude gave (8 results each, no duplicates)
+    const search = (q) => matchFood(q, state.index, { limit: 8, boostIds: state.favIds });
+    const candidates = search(it.queries[0] || it.name);
+    const seen = new Set(candidates.map((f) => f.id));
+    const alternatives = it.queries.slice(1)
+      .flatMap((q) => search(q).map((f) => ({ ...f, altQuery: q })))
+      .filter((f) => !seen.has(f.id) && seen.add(f.id));
+    const { food, estimated } = pickFood(it, candidates, { alternatives, makeId: () => 'a' + Date.now().toString(36) + i });
+    const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
+      : (it.name !== food.n ? `זוהה: ${it.name}` : '');
+    return { food, ...amountFor(it, food, unitLabel), note, query: it.name, estimated, meal: it.meal, dayOffset: it.dayOffset };
+  });
+}
+
 // source: a File (gallery / camera app) or an image already in memory ({ dataUrl, base64 })
 async function analyzeMeal(source) {
   const sheet = $('#photo-sheet');
@@ -757,19 +781,7 @@ async function analyzeMeal(source) {
     const recognized = await analyzePhoto({ apiKey, imageBase64: img.base64, mediaType: 'image/jpeg', signal: ctrl.signal });
     if (ctrl.signal.aborted) return;
     if (!recognized.length) throw new VisionError('empty', 'no food');
-    const items = recognized.map((it, i) => {
-      // the primary search term, then each alternative term Claude gave (8 results each, no duplicates)
-      const search = (q) => matchFood(q, state.index, { limit: 8, boostIds: state.favIds });
-      const candidates = search(it.queries[0] || it.name);
-      const seen = new Set(candidates.map((f) => f.id));
-      const alternatives = it.queries.slice(1)
-        .flatMap((q) => search(q).map((f) => ({ ...f, altQuery: q })))
-        .filter((f) => !seen.has(f.id) && seen.add(f.id));
-      const { food, estimated } = pickFood(it, candidates, { alternatives, makeId: () => 'a' + Date.now().toString(36) + i });
-      const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
-        : (it.name !== food.n ? `זוהה: ${it.name}` : '');
-      return { food, ...amountFor(it, food, unitLabel), note, query: it.name };
-    });
+    const items = resolveItems(recognized);
     photo.ctrl = null;
     sheet.close();
     forgetPhoto();
@@ -796,6 +808,233 @@ function closePhoto() {
   stopCamera();
   $('#photo-sheet').close();
   forgetPhoto();
+}
+
+// ---------- chat: "הבוקר אכלתי פיתה עם גבינה לבנה" ----------
+
+// The owner's choice: the chat logs straight to the diary (no confirm sheet); every reply shows what was
+// saved, with undo and edit. Messages live in memory only: never stored, never synced.
+// msgs: { id, me?, text?, ids?, undone?, error?, pending?, settings? }
+const chat = { msgs: [], seq: 0, busy: 0, queue: Promise.resolve(), rec: null, listening: false, renderGen: 0, scrolledFor: '' };
+
+// Saves resolved items as diary entries. Returns the saved entry ids in order, which of them carry
+// Claude's own estimate, and the error that stopped saving partway, if any (what was saved stays saved).
+async function saveItemsDirect(items, now = new Date()) {
+  const today = isoDate(now);
+  const out = { ids: [], estimated: [], error: null };
+  try {
+    for (const [i, r] of items.entries()) {
+      const grams = gramsFor(r.food, r.amount, r.unit);
+      if (!(grams > 0)) continue;
+      // a food from outside the database (Claude's estimate) is kept, so the entry stays editable
+      if (!String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
+      const entry = {
+        id: newId(), date: addDays(today, r.dayOffset || 0), meal: r.meal || mealForHour(now.getHours()),
+        foodId: r.food.id, name: r.food.n, amount: r.amount, unit: r.unit, grams, ...nutrientsFor(r.food, grams),
+        ts: Date.now() + i,   // keeps the spoken order in the diary
+      };
+      const { id } = await put('entries', entry);
+      out.ids.push(id);
+      if (r.estimated) out.estimated.push(id);
+    }
+  } catch (e) { out.error = e; }
+  await refreshMyFoods().catch(() => {});
+  return out;
+}
+
+function dayWord(date) {
+  const today = isoDate();
+  if (date === today) return '';
+  if (date === addDays(today, -1)) return 'אתמול';
+  return new Date(date + 'T12:00:00').toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'numeric' });
+}
+
+async function renderChat() {
+  const gen = ++chat.renderGen;
+  const log = $('#chat-log');
+  const intro = log.firstElementChild.outerHTML;
+  const all = chat.msgs.flatMap((m) => m.ids || []);
+  const entries = new Map((await db.log.bulkGet(all)).filter(Boolean).map((e) => [e.id, e]));
+  if (gen !== chat.renderGen) return;   // a newer render started meanwhile: it paints the current state
+  const html = chat.msgs.map((m) => {
+    if (m.me) return `<div class="bubble me" data-testid="chat-me">${esc(m.text)}</div>`;
+    if (m.pending) return `<div class="bubble bot pending" data-testid="chat-pending">רושם…</div>`;
+    if (m.error) {
+      return `<div class="bubble bot error" data-testid="chat-error">${esc(m.text)}${m.settings
+        ? `<div class="actions"><button type="button" class="btn secondary" data-chat-settings data-testid="chat-settings">להגדרות</button></div>` : ''}</div>`;
+    }
+    const rows = (m.ids || []).map((id) => entries.get(id)).filter(Boolean);
+    if (!m.ids?.length) return `<div class="bubble bot" data-testid="chat-reply">${esc(m.text)}</div>`;
+    if (m.undone || !rows.length) {
+      return `<div class="bubble bot" data-testid="chat-reply"><span class="undone">${m.undone ? 'בוטל, לא נרשם ליומן' : 'הפריטים כבר לא ביומן'}</span></div>`;
+    }
+    const total = rows.reduce((s, e) => s + (Number(e.kcal) || 0), 0);
+    const items = rows.map((e) => {
+      const where = [MEALS.find((x) => x.id === e.meal)?.label, dayWord(e.date)].filter(Boolean).join(' · ');
+      const est = m.estimated?.includes(e.id) ? ' · ערכים משוערים' : '';
+      return `<li data-testid="chat-item"><span class="grow"><span class="name">${esc(e.name)}</span>
+        <span class="sub">${esc(amountText(e))} · ${esc(where)}${est}</span></span>
+        <span class="kcal">${fmt(e.kcal)} קק״ל</span>
+        <button type="button" class="link-btn" data-chat-edit="${esc(e.id)}" data-testid="chat-edit">עריכה</button></li>`;
+    }).join('');
+    return `<div class="bubble bot" data-testid="chat-reply">
+      <div>${m.text ? esc(m.text) : 'נרשם ליומן ✓'}</div>
+      <ul class="list compact">${items}</ul>
+      <div class="total">סה״כ ${fmt(total)} קק״ל</div>
+      <div class="actions"><button type="button" class="btn secondary" data-chat-undo="${m.id}" data-testid="chat-undo">ביטול</button></div>
+    </div>`;
+  }).join('');
+  log.innerHTML = intro + html;
+  // the screen-reader status speaks only the newest reply, not the whole chat again
+  const last = chat.msgs[chat.msgs.length - 1];
+  const status = last && !last.me && !last.pending ? log.lastElementChild.innerText.replace(/\s+/g, ' ').replace(/ עריכה/g, '').trim() : '';
+  if (status && $('#chat-status').textContent !== status) $('#chat-status').textContent = status;
+  // the log's bottom padding keeps the newest bubble above the composer and the nav
+  // (only when something new arrived, so undo or edit higher up does not jump the screen)
+  const key = `${last?.id}:${!!last?.pending}`;
+  if (state.view === 'chat' && key !== chat.scrolledFor) {
+    chat.scrolledFor = key;
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  }
+}
+
+// Messages are handled one at a time, in the order sent: a second message while the first is still
+// being logged waits its turn (people send in pieces: "פיתה", then "וגם קפה"). Nothing is ever aborted,
+// so a request that was paid for is always logged and always answered.
+function sendChat(text) {
+  text = String(text || '').trim();
+  if (!text) return chat.queue;
+  stopListening();
+  $('#chat-input').value = '';
+  fitChatInput();
+  chat.msgs.push({ id: ++chat.seq, me: true, text });
+  const pending = { id: ++chat.seq, pending: true };
+  chat.msgs.push(pending);
+  chat.busy++;
+  renderChat();
+  chat.queue = chat.queue.then(() => logChat(text, pending)).finally(() => { chat.busy--; });
+  return chat.queue;
+}
+
+async function logChat(text, pending) {
+  const finish = (m) => {
+    const at = chat.msgs.indexOf(pending);
+    if (at >= 0) chat.msgs.splice(at, 1, { id: pending.id, ...m });
+    renderChat();
+    if (state.view === 'today') renderToday();
+  };
+  let saved = null;
+  try {
+    const apiKey = await getSetting('apiKey', '');
+    if (!apiKey) throw new VisionError('no_key', 'no key');
+    const now = new Date();
+    const { items: recognized, reply } = await analyzeText({ apiKey, text, now });
+    if (!recognized.length) { finish({ text: reply || CHAT_ERROR_TEXT.empty }); return; }
+    saved = await saveItemsDirect(resolveItems(recognized), now);
+    if (saved.error) throw saved.error;
+    if (!saved.ids.length) { finish({ text: reply || CHAT_ERROR_TEXT.empty }); return; }
+    finish({ text: reply, ids: saved.ids, estimated: saved.estimated });
+  } catch (e) {
+    const code = e instanceof VisionError ? e.code : 'local';
+    console.warn('chat logging failed', code, e?.message || e);
+    const text = CHAT_ERROR_TEXT[code] || CHAT_ERROR_TEXT.api;
+    // part of the message was already saved when storage failed: show it, with its undo
+    if (saved?.ids.length) finish({ text: CHAT_ERROR_TEXT.partial, ids: saved.ids, estimated: saved.estimated });
+    else finish({ error: true, text, settings: code === 'no_key' || code === 'auth' });
+  }
+}
+
+async function undoChat(id) {
+  const m = chat.msgs.find((x) => x.id === id);
+  if (!m?.ids || m.undone) return;
+  const prev = (await db.log.bulkGet(m.ids)).filter(Boolean);
+  for (const e of prev) await remove('entries', e.id);
+  m.undone = true;
+  await renderChat();
+  toast('בוטל', async () => {
+    for (const e of prev) await put('entries', e);
+    m.undone = false;
+    renderChat();
+  });
+}
+
+async function editChatEntry(id) {
+  const entry = await db.log.get(id);
+  if (!entry) { renderChat(); return; }
+  await editEntry(entry);
+  renderChat();
+}
+
+function fitChatInput() {
+  const el = $('#chat-input');
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight + 2, 120) + 'px';
+  // the log's bottom padding and the toast follow the composer's real height
+  const h = $('#chat-form').offsetHeight;
+  if (h) document.documentElement.style.setProperty('--composer-h', h + 'px');
+}
+
+// Voice: the browser's speech recognition (on Chrome for Android, Google's speech service turns the
+// speech into text; the app never records or keeps audio). Hidden where the browser has none.
+const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function stopListening() {
+  if (!chat.rec) return;
+  const rec = chat.rec;
+  chat.rec = null;
+  try { rec.abort(); } catch { /* already stopped */ }
+  setListening(false);
+}
+
+function setListening(on) {
+  chat.listening = on;
+  const mic = $('#chat-mic');
+  mic.setAttribute('aria-pressed', String(on));
+  mic.setAttribute('aria-label', on ? 'עצירת ההקלטה' : 'הקלטה');
+  $('#chat-input').placeholder = on ? 'מקשיב…' : 'מה אכלת?';
+}
+
+function toggleListening() {
+  if (chat.rec) { stopListening(); return; }
+  const rec = new Speech();
+  rec.lang = 'he-IL';
+  rec.interimResults = true;
+  rec.continuous = false;
+  rec.maxAlternatives = 1;
+  const input = $('#chat-input');
+  const before = input.value.trim();
+  let heard = '';
+  chat.rec = rec;
+  rec.onresult = (ev) => {
+    if (chat.rec !== rec) return;
+    heard = [...ev.results].map((r) => r[0]?.transcript || '').join('').trim();
+    input.value = [before, heard].filter(Boolean).join(' ');
+    fitChatInput();
+    if (ev.results[ev.results.length - 1]?.isFinal) {
+      chat.rec = null;
+      setListening(false);
+      sendChat(input.value);
+    }
+  };
+  rec.onerror = (ev) => {
+    if (chat.rec !== rec) return;
+    chat.rec = null;
+    setListening(false);
+    const text = ev.error === 'not-allowed' || ev.error === 'service-not-allowed'
+      ? 'אין הרשאה למיקרופון. אפשר לאשר אותה בהגדרות הדפדפן, או להקליד.'
+      : ev.error === 'no-speech' ? 'לא שמעתי כלום. נסו שוב, או הקלידו.'
+        : ev.error === 'network' ? 'זיהוי הדיבור צריך חיבור לאינטרנט.'
+          : ev.error === 'aborted' ? '' : 'זיהוי הדיבור לא הצליח. נסו שוב, או הקלידו.';
+    if (text) toast(text);
+  };
+  rec.onend = () => {
+    if (chat.rec !== rec) return;
+    chat.rec = null;
+    setListening(false);
+    if (heard) sendChat(input.value);   // ended without a final result: send what was heard
+  };
+  try { rec.start(); setListening(true); }
+  catch { chat.rec = null; setListening(false); toast('זיהוי הדיבור לא הצליח. נסו שוב, או הקלידו.'); }
 }
 
 // ---------- barcode ----------
@@ -1144,6 +1383,17 @@ const followLatestWeight = () => loadTarget();
 
 // ---------- events ----------
 
+function editEntry(entry) {
+  // a food this phone does not know (synced from another phone, or removed): rebuild it from the
+  // entry's own values, so the entry can still be edited in grams
+  const per100 = (v) => (entry.grams > 0 ? Math.round(((Number(v) || 0) / entry.grams) * 1000) / 10 : 0);
+  const food = state.byId.get(entry.foodId) || {
+    id: entry.foodId, n: String(entry.name ?? ''), kcal: per100(entry.kcal), p: per100(entry.p), c: per100(entry.c), f: per100(entry.f), m: [],
+    fromEntry: true,   // only for this edit: never saved back as a food (it may have been deleted on purpose)
+  };
+  return confirmItems([{ food, amount: entry.amount ?? entry.grams, unit: entry.unit, grams: entry.grams }], { meal: entry.meal, editId: entry.id });
+}
+
 function bind() {
   $('.bottomnav').addEventListener('click', (e) => {
     const b = e.target.closest('[data-view]');
@@ -1170,14 +1420,7 @@ function bind() {
     } else if (edit) {
       const entry = await db.log.get(edit.dataset.edit);
       if (!entry) { renderToday(); return; }
-      // a food this phone does not know (synced from another phone, or removed): rebuild it from the
-      // entry's own values, so the entry can still be edited in grams
-      const per100 = (v) => (entry.grams > 0 ? Math.round(((Number(v) || 0) / entry.grams) * 1000) / 10 : 0);
-      const food = state.byId.get(entry.foodId) || {
-        id: entry.foodId, n: String(entry.name ?? ''), kcal: per100(entry.kcal), p: per100(entry.p), c: per100(entry.c), f: per100(entry.f), m: [],
-        fromEntry: true,   // only for this edit: never saved back as a food (it may have been deleted on purpose)
-      };
-      confirmItems([{ food, amount: entry.amount ?? entry.grams, unit: entry.unit, grams: entry.grams }], { meal: entry.meal, editId: entry.id });
+      editEntry(entry);
     }
   });
   $('#quick').addEventListener('click', (e) => {
@@ -1214,6 +1457,22 @@ function bind() {
     const b = e.target.closest('[data-food]');
     const food = b && state.byId.get(b.dataset.food);
     if (food) confirmItems([{ food }]);
+  });
+
+  $('#chat-form').onsubmit = (e) => { e.preventDefault(); sendChat($('#chat-input').value); };
+  $('#chat-input').addEventListener('input', fitChatInput);
+  $('#chat-input').addEventListener('keydown', (e) => {
+    // Enter sends; Shift+Enter is a new line
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(e.target.value); }
+  });
+  $('#chat-mic').hidden = !Speech;
+  $('#chat-mic').onclick = toggleListening;
+  $('#chat-log').addEventListener('click', (e) => {
+    const undo = e.target.closest('[data-chat-undo]');
+    const edit = e.target.closest('[data-chat-edit]');
+    if (undo) undoChat(Number(undo.dataset.chatUndo));
+    else if (edit) editChatEntry(edit.dataset.chatEdit);
+    else if (e.target.closest('[data-chat-settings]')) { show('settings'); $('#experimental').open = true; $('#api-key').focus(); }
   });
 
   $('#open-camera').onclick = () => { photo.restarts = []; openCamera(); };
@@ -1340,7 +1599,7 @@ function bind() {
 
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible') { updater.onHidden(); return; }
+    if (document.visibilityState !== 'visible') { stopListening(); updater.onHidden(); return; }
     if (rollDay()) { renderDate(); if (state.view === 'add') renderMealPicker(); }
     // back from the camera or picker: the change event (if any) fires right after this
     if (photo.picking) setTimeout(() => { photo.picking = false; }, 3000);
@@ -1350,6 +1609,7 @@ function bind() {
       if ($('#photo-sheet').open && !photo.ctrl) openCamera(); else stopCamera();
     }
     if (state.view === 'today') renderToday();
+    if (state.view === 'chat') renderChat();
     sync.syncNow();
     updater.check();
   });
