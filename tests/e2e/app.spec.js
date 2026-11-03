@@ -219,7 +219,9 @@ async function saveApiKey(page, key) {
   await page.getByTestId('nav-settings').click();
   await expect(page.getByTestId('api-key')).toBeHidden();
   await page.locator('#experimental summary').click();
-  await expect(page.getByTestId('api-key')).toHaveAttribute('type', 'password');
+  // a masked text field, not a password field: password managers would offer to save a "password"
+  await expect(page.getByTestId('api-key')).toHaveAttribute('type', 'text');
+  await expect(page.getByTestId('api-key')).toHaveClass(/masked/);
   await page.getByTestId('api-key').fill(key);
   await page.getByTestId('api-key-save').click();
 }
@@ -515,7 +517,7 @@ test('saving settings after a mistyped weigh-in, then deleting it, restores the 
   await expect.poll(() => page.evaluate(async () => {                     // wait until that save is stored
     const { getSetting } = await import('./lib/db.js');
     return (await getSetting('profile', null))?.activity;
-  })).toBe(1.55);
+  }), { timeout: 15000 }).toBe(1.55);                                     // the first save's toast can sit over the button for 4 s
   const expected = await page.evaluate(async () => {
     const { dailyTarget } = await import('./lib/calc.js');
     return dailyTarget({ sex: 'male', age: 30, height: 175, weight: 70, activity: 1.55, goal: -500 }).toLocaleString('en-US');
@@ -524,4 +526,96 @@ test('saving settings after a mistyped weigh-in, then deleting it, restores the 
   await page.locator('[data-del-weight]').first().click();                // delete the typo
   await page.getByTestId('nav-today').click();
   await expect(page.getByTestId('target')).toHaveText(expected);
+});
+
+test('no password fields anywhere, so password managers do not pop up; the key can be shown', async ({ page }) => {
+  await open(page);
+  expect(await page.locator('input[type=password]').count()).toBe(0);
+  await page.getByTestId('nav-settings').click();
+  await page.locator('#experimental summary').click();
+  const key = page.getByTestId('api-key');
+  await key.fill('sk-ant-secret');
+  expect(await key.evaluate((el) => getComputedStyle(el).webkitTextSecurity)).toBe('disc');
+  await page.getByTestId('api-key-show').click();
+  expect(await key.evaluate((el) => getComputedStyle(el).webkitTextSecurity)).toBe('none');
+  await expect(page.getByTestId('api-key-show')).toHaveText('הסתרה');
+  await page.getByTestId('api-key-show').click();
+  expect(await key.evaluate((el) => getComputedStyle(el).webkitTextSecurity)).toBe('disc');
+});
+
+test('meal photo: a wrongly recognized food can be replaced, keeping the estimated amount', async ({ page }) => {
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ items: [
+    { name: 'אטריות ביצים', query: 'אטריות ביצים מבושלות', alt_queries: [], grams: 200,
+      kcal_per_100g: 138, protein_per_100g: 4.5, carbs_per_100g: 25, fat_per_100g: 2 },
+  ] }) }] } }));
+  await open(page);
+  await saveApiKey(page, 'sk-ant-test');
+  await page.getByTestId('nav-add').click();
+  await page.getByTestId('photo-input').setInputFiles(photoFile);
+  const item = page.locator('#confirm-items .confirm-item').first();
+  await expect(item.locator('.ci-name')).toContainText('אטריות ביצים');
+  const gramsBefore = await page.evaluate(() => document.querySelector('[data-kcal]').textContent.match(/^[\d,]+/)[0]);
+
+  await item.getByTestId('swap').click();
+  await expect(item.getByTestId('swap-search')).toHaveValue('אטריות ביצים');   // starts from what was recognized
+  await item.getByTestId('swap-search').fill('אטריות אורז מבושלות');
+  await item.getByTestId('swap-result').filter({ hasText: 'אטריות אורז, מבושלות' }).click();
+
+  await expect(item.locator('.ci-name')).toContainText('אטריות אורז, מבושלות');
+  await expect(item.getByTestId('item-note')).toContainText('במקום: אטריות ביצים');
+  const gramsAfter = await page.evaluate(() => document.querySelector('[data-kcal]').textContent.match(/^[\d,]+/)[0]);
+  expect(Math.abs(Number(gramsAfter.replace(/,/g, '')) - Number(gramsBefore.replace(/,/g, '')))).toBeLessThanOrEqual(80);  // same portion, rounded to its unit
+  const total = await page.getByTestId('confirm-total').textContent();
+  await page.getByTestId('confirm-save').click();
+  await page.getByTestId('nav-today').click();
+  await expect(page.getByTestId('entry')).toContainText('אטריות אורז');
+  await expect(page.getByTestId('eaten')).toHaveText(total);
+});
+
+test('any logged item can be replaced while editing it', async ({ page }) => {
+  await open(page);
+  await addBySearch(page, 'פיתה');
+  await page.getByTestId('confirm-save').click();
+  await page.locator('[data-edit]').first().click();
+  const item = page.locator('#confirm-items .confirm-item').first();
+  await item.getByTestId('swap').click();
+  await item.getByTestId('swap-search').fill('לחם אחיד');
+  await item.getByTestId('swap-search').press('Enter');                       // Enter picks the first result
+  await expect(item.locator('.ci-name')).toContainText('לחם');
+  await expect(page.getByTestId('confirm-sheet')).toBeVisible();              // Enter did not submit the sheet
+  await page.getByTestId('confirm-save').click();
+  await expect(page.getByTestId('entry')).toHaveCount(1);
+  await expect(page.getByTestId('entry')).toContainText('לחם');
+});
+
+test('replacing keeps the portion: a small amount does not become half a big unit (review/Codex #1); the note keeps the original (#2)', async ({ page }) => {
+  await open(page);
+  await addBySearch(page, 'פיתה');
+  await page.getByTestId('unit').selectOption('g');
+  await page.getByTestId('amount').fill('30');
+  const item = page.locator('#confirm-items .confirm-item').first();
+  await item.getByTestId('swap').click();
+  await item.getByTestId('swap-search').fill('אורז לבן מבושל');
+  await item.getByTestId('swap-result').filter({ hasText: 'אורז לבן, מבושל, ללא תוספת שומן' }).first().click();
+  await expect(item.getByTestId('unit')).toHaveValue('g');                    // a 158 g cup would be wrong
+  await expect(item.getByTestId('amount')).toHaveValue('30');
+  await expect(item.getByTestId('item-note')).toContainText('במקום: פיתה');
+  await item.getByTestId('swap').click();                                      // a second replacement
+  await item.getByTestId('swap-search').fill('קוסקוס');
+  await item.getByTestId('swap-result').first().click();
+  await expect(item.getByTestId('item-note')).toContainText('במקום: פיתה');   // still the original
+  await expect(item.getByTestId('amount')).toHaveValue('30');
+});
+
+test('the shown key is hidden again after saving (review #3)', async ({ page }) => {
+  await open(page);
+  await page.getByTestId('nav-settings').click();
+  await page.locator('#experimental summary').click();
+  const key = page.getByTestId('api-key');
+  await key.fill('sk-ant-secret');
+  await page.getByTestId('api-key-show').click();
+  expect(await key.evaluate((el) => getComputedStyle(el).webkitTextSecurity)).toBe('none');
+  await page.getByTestId('api-key-save').click();
+  expect(await key.evaluate((el) => getComputedStyle(el).webkitTextSecurity)).toBe('disc');
+  await expect(page.getByTestId('api-key-show')).toHaveText('הצגה');
 });

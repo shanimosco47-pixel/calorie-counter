@@ -424,20 +424,21 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
   const known = (food, unit) => unit === 'g' || (food.m || []).some(([c]) => String(c) === String(unit));
   const rows = items.map((it) => {
     const note = it.note || '';
-    if (it.amount == null) return { food: it.food, note, ...defaultAmount(it.food) };
+    const query = it.query || '';
+    if (it.amount == null) return { food: it.food, note, query, ...defaultAmount(it.food) };
     // a unit this device's food data lacks (logged on a newer version): edit the same grams
-    if (!known(it.food, it.unit || 'g')) return { food: it.food, note, amount: it.grams ?? it.amount, unit: 'g' };
-    return { food: it.food, note, amount: it.amount, unit: it.unit || 'g' };
+    if (!known(it.food, it.unit || 'g')) return { food: it.food, note, query, amount: it.grams ?? it.amount, unit: 'g' };
+    return { food: it.food, note, query, amount: it.amount, unit: it.unit || 'g' };
   });
 
   $('#confirm-title').textContent = editId ? 'עריכת פריט' : 'הוספה ליומן';
   $('#confirm-save').textContent = editId ? 'שמירה' : 'הוספה ליומן';
   $('#confirm-meal').innerHTML = MEALS.map((m) => `<option value="${m.id}" ${m.id === meal ? 'selected' : ''}>${m.label}</option>`).join('');
 
-  box.innerHTML = rows.map((r, i) => {
+  const itemHtml = (r, i) => {
     const f = r.food;
     const opts = [['g', baseWord(f)], ...(f.m || []).map(([c, g]) => [String(c), `${unitLabel(f, c)} (${fmt(g)} ${baseShort(f)})`])];
-    return `<div class="confirm-item" data-i="${i}">
+    return `
       <div class="ci-head">
         <div class="ci-name">${esc(f.n)}<div class="ci-per">${fmt(f.kcal)} קק״ל · ח ${fmt1(f.p)} · פ ${fmt1(f.c)} · ש ${fmt1(f.f)} (ל-100 ${baseShort(f)})</div>${r.note ? `<div class="ci-note" data-testid="item-note">${esc(r.note)}</div>` : ''}</div>
         <button type="button" class="star" data-star="${esc(f.id)}" aria-pressed="${state.favIds.has(f.id)}" aria-label="מועדף" data-testid="star">★</button>
@@ -447,8 +448,41 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
         <select data-unit data-testid="unit" aria-label="יחידה">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === String(r.unit) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
       </div>
       <div class="ci-kcal" data-kcal data-testid="item-kcal"></div>
-    </div>`;
-  }).join('');
+      <button type="button" class="ci-swap" data-swap data-testid="swap">לא זה? החלפת מזון</button>
+      <div class="ci-swap-panel" data-swap-panel hidden>
+        <input type="search" data-swap-q data-testid="swap-search" placeholder="חיפוש המזון הנכון" autocomplete="off" enterkeyhint="search">
+        <ul class="list compact" data-swap-results data-testid="swap-results"></ul>
+      </div>`;
+  };
+  box.innerHTML = rows.map((r, i) => `<div class="confirm-item" data-i="${i}">${itemHtml(r, i)}</div>`).join('');
+
+  // "not this?": search for the right food; the amount carries over in grams, shown in its natural unit
+  const swapSearch = (i) => {
+    const el = box.querySelector(`[data-i="${i}"]`);
+    const q = el.querySelector('[data-swap-q]').value.trim();
+    const found = q ? matchFood(q, state.index, { limit: 8, boostIds: state.favIds }) : [];
+    el.querySelector('[data-swap-results]').innerHTML = found.length
+      ? found.map((f) => `<li><button type="button" class="row" data-pick="${esc(f.id)}" data-testid="swap-result">
+          <span class="grow"><span class="name">${esc(f.n)}</span><span class="sub">${fmt(f.kcal)} קק״ל ל-100 ${baseShort(f)}</span></span></button></li>`).join('')
+      : (q ? '<li class="muted">לא נמצא. נסו מילה אחרת.</li>' : '');
+  };
+  const swapTo = (i, food) => {
+    const r = rows[i];
+    const grams = r.grams > 0 ? r.grams : 0;
+    const d = defaultAmount(food);
+    const unitG = d.unit === 'g' ? 0 : (food.m || []).find(([c]) => String(c) === String(d.unit))?.[1];
+    let amount = d.amount;
+    let unit = d.unit;
+    if (grams && unitG) amount = Math.max(0.5, Math.round((grams / unitG) * 2) / 2);
+    // rounding to half a unit must not change the portion much (30 g of rice is not half a 158 g cup):
+    // the user corrected what it is, not how much, so keep the grams when the unit would drift > 15%
+    if (grams && (!unitG || Math.abs(amount * unitG - grams) > 0.15 * grams)) { amount = Math.round(grams); unit = 'g'; }
+    r.query ||= r.food.n;                    // the original name, kept across several replacements
+    Object.assign(r, { food, amount, unit, note: `במקום: ${r.query}` });
+    const el = box.querySelector(`[data-i="${i}"]`);
+    el.innerHTML = itemHtml(r, i);
+    compute();
+  };
 
   const compute = () => {
     let total = 0;
@@ -463,9 +497,40 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
     });
     $('#confirm-total').textContent = fmt(total);
   };
-  box.oninput = compute;
-  box.onchange = compute;
+  box.oninput = (ev) => {
+    const q = ev.target.closest('[data-swap-q]');
+    if (q) return swapSearch(Number(q.closest('[data-i]').dataset.i));
+    compute();
+  };
+  box.onchange = (ev) => { if (!ev.target.closest('[data-swap-q]')) compute(); };
+  box.onkeydown = (ev) => {
+    if (ev.key !== 'Enter' || !ev.target.closest('[data-swap-q]')) return;
+    ev.preventDefault();
+    ev.target.closest('[data-i]').querySelector('[data-pick]')?.click();   // Enter picks the first result
+  };
   box.onclick = async (ev) => {
+    const swap = ev.target.closest('[data-swap]');
+    if (swap) {
+      const item = swap.closest('[data-i]');
+      const i = Number(item.dataset.i);
+      const panel = item.querySelector('[data-swap-panel]');
+      panel.hidden = !panel.hidden;
+      if (!panel.hidden) {
+        const input = panel.querySelector('[data-swap-q]');
+        if (!input.value) input.value = rows[i].query || rows[i].food.n.split(',')[0];
+        swapSearch(i);
+        input.focus();
+        input.select();
+      }
+      return;
+    }
+    const pick = ev.target.closest('[data-pick]');
+    if (pick) {
+      const i = Number(pick.closest('[data-i]').dataset.i);
+      const food = state.byId.get(pick.dataset.pick);
+      if (food) swapTo(i, food);
+      return;
+    }
     const star = ev.target.closest('[data-star]');
     if (!star) return;
     const id = star.dataset.star;
@@ -700,7 +765,7 @@ async function analyzeMeal(source) {
       const { food, estimated } = pickFood(it, candidates, { alternatives, makeId: () => 'a' + Date.now().toString(36) + i });
       const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
         : (it.name !== food.n ? `זוהה: ${it.name}` : '');
-      return { food, ...amountFor(it, food, unitLabel), note };
+      return { food, ...amountFor(it, food, unitLabel), note, query: it.name };
     });
     photo.ctrl = null;
     sheet.close();
@@ -1233,6 +1298,15 @@ function bind() {
   $('#export-btn').onclick = exportBackup;
   $('#import-input').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#install-btn').onclick = installApp;
+  // the key is shown only while looking at it: hidden again after saving or closing the section
+  const hideKey = () => { $('#api-key').classList.add('masked'); $('#api-key-show').textContent = 'הצגה'; $('#api-key-show').setAttribute('aria-pressed', 'false'); };
+  $('#experimental').addEventListener('toggle', hideKey);
+  $('#api-key-save').addEventListener('click', hideKey);
+  $('#api-key-show').onclick = () => {
+    const shown = $('#api-key').classList.toggle('masked') === false;
+    $('#api-key-show').textContent = shown ? 'הסתרה' : 'הצגה';
+    $('#api-key-show').setAttribute('aria-pressed', String(shown));
+  };
   $('#check-update').onclick = () => updater.check({ manual: true });
   $('#sync-create').onclick = () => connectSync(sync.generateCode());
   $('#sync-join-open').onclick = () => { $('#sync-join-form').hidden = false; $('#sync-join-code').focus(); };
