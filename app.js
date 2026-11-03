@@ -114,6 +114,13 @@ function builtText(iso) {
 // the field the user has typed into since focusing it (unsaved text an update reload would lose)
 let typedIn = null;
 document.addEventListener('focusin', () => { typedIn = null; });
+document.addEventListener('submit', () => { typedIn = null; }, true);   // saved: nothing unsaved left
+document.addEventListener('change', (e) => { if (e.target.matches?.('select, input[type=checkbox], input[type=radio]')) typedIn = null; }, true);
+// html5-qrcode's video.play() is interrupted when the scanner is closed while the camera starts;
+// that is expected, not an error
+window.addEventListener('unhandledrejection', (e) => {
+  if (e.reason?.name === 'AbortError' && /play\(\) request was interrupted/.test(e.reason?.message || '')) e.preventDefault();
+});
 document.addEventListener('input', (e) => { typedIn = e.target; });
 
 let localStore = null;
@@ -483,9 +490,10 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
         renderToday();
         return resolve([]);
       }
+      if (!editId && rows.every((r) => r.grams <= 0)) { toast('לא נוסף: הכמות היא 0'); return resolve([]); }
       for (const r of rows) {
         if (r.grams <= 0) continue;
-        if (!String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
+        if (!r.food.fromEntry && !String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
         const entry = {
           date: state.date, meal: mealId, foodId: r.food.id, name: r.food.n,
           amount: r.amount, unit: r.unit, grams: r.grams, ...r.n, ts: Date.now(),
@@ -1010,7 +1018,7 @@ async function exportBackup() {
 async function importBackup(file) {
   try {
     const data = parseBackup(await file.text());
-    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הנתונים בטלפון הזה יוחלפו, וכשהסנכרון פעיל גם במכשירים המחוברים (שינויים שנעשו אחרי הגיבוי נשמרים).`)) return;
+    if (!confirm(`לשחזר גיבוי עם ${data.entries.length} רישומים? הנתונים יחזרו למצב שבגיבוי, וכשהסנכרון פעיל גם במכשירים המחוברים: פריטים שנוספו אחרי הגיבוי יימחקו. עריכות שנעשו אחרי הגיבוי לפריטים שבו יישמרו.`)) return;
     await restoreAll(data);
     await refreshMyFoods();
     await loadTarget();
@@ -1054,6 +1062,7 @@ function bind() {
       const per100 = (v) => (entry.grams > 0 ? Math.round(((Number(v) || 0) / entry.grams) * 1000) / 10 : 0);
       const food = state.byId.get(entry.foodId) || {
         id: entry.foodId, n: String(entry.name ?? ''), kcal: per100(entry.kcal), p: per100(entry.p), c: per100(entry.c), f: per100(entry.f), m: [],
+        fromEntry: true,   // only for this edit: never saved back as a food (it may have been deleted on purpose)
       };
       confirmItems([{ food, amount: entry.amount ?? entry.grams, unit: entry.unit, grams: entry.grams }], { meal: entry.meal, editId: entry.id });
     }

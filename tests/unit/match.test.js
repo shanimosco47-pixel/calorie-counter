@@ -115,3 +115,9 @@ test('audit: common spellings and plurals find the right food', () => {
   assert.match(top('קפה עם חלב'), /קפוצ'ינו/);
   assert.match(top('הודו'), /^בשר הודו/);
 });
+
+test('audit 2: plural forms never beat what was typed', () => {
+  const top = (q) => matchFood(q, index, { limit: 1 })[0]?.n || '';
+  assert.match(top('פירה'), /פירה/);
+  assert.match(top('לחמנייה'), /^לחמניה קלה/);
+});

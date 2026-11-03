@@ -1,4 +1,4 @@
-// Offline support: app shell and food data are cached; Open Food Facts, Supabase and Claude API requests always go to the network.
+// Offline support: app shell and food data are cached per build; Open Food Facts, Supabase and Claude API requests always go to the network.
 const VERSION = 'kalorit-app-v1.11.0';
 const SHELL = [
   './',
@@ -37,33 +37,31 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Pages and the manifest: network first, so an update reaches the phone on the very next open.
-// Everything else (code, food data, icons): from this build's cache.
-const NETWORK_FIRST = (req, url) => req.mode === 'navigate' || url.pathname.endsWith('.webmanifest') || url.pathname.endsWith('/sw.js');
+// The page and its code always come from the same build: the page from this build's cache (network
+// only if missing), so a newer deploy's markup never runs with this build's code. New versions arrive
+// through the app's updater (version.json -> new worker -> reload), not file by file.
+// The manifest and the worker script itself: network first, so the browser sees updates.
+const NETWORK_FIRST = (req, url) => url.pathname.endsWith('.webmanifest') || url.pathname.endsWith('/sw.js');
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
   if (url.pathname.endsWith('/version.json')) return;   // update check: always straight to the server
 
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      caches.open(VERSION).then(async (cache) => (await cache.match('index.html')) || fetch(event.request))
+        .catch(() => Response.error()),
+    );
+    return;
+  }
+
   if (NETWORK_FIRST(event.request, url)) {
-    // a slow network must not hang the app's start: after 3 s the cached page is used instead
+    // a slow network must not hang the app: after 3 s the cached copy is used instead
     const timeout = (ms) => new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms));
     event.respondWith(
       Promise.race([fetch(event.request, { cache: 'no-cache' }), timeout(3000)])
-        .then(async (res) => {
-          if (res.ok) {
-            const cache = await caches.open(VERSION);
-            await cache.put(event.request.mode === 'navigate' ? 'index.html' : event.request, res.clone());
-          }
-          return res;
-        })
-        .catch(async () => {
-          const cache = await caches.open(VERSION);
-          return (await cache.match(event.request, { ignoreSearch: true }))
-            || (await cache.match('index.html'))
-            || Response.error();
-        }),
+        .catch(async () => (await (await caches.open(VERSION)).match(event.request, { ignoreSearch: true })) || Response.error()),
     );
     return;
   }
