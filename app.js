@@ -116,7 +116,13 @@ function builtText(iso) {
 
 // the field the user has typed into since focusing it (unsaved text an update reload would lose)
 let typedIn = null;
+let savedApiKey = '';   // what the API key field showed when loaded or last saved
 document.addEventListener('focusin', () => { typedIn = null; });
+// html5-qrcode's video.play() is interrupted when the scanner is closed while the camera starts;
+// that is expected, not an error
+window.addEventListener('unhandledrejection', (e) => {
+  if (e.reason?.name === 'AbortError' && /play\(\) request was interrupted/.test(e.reason?.message || '')) e.preventDefault();
+});
 document.addEventListener('input', (e) => { typedIn = e.target; });
 // a submitted or committed field is no longer "mid-typing" (e.g. a weight saved with Enter keeps focus)
 document.addEventListener('submit', () => { typedIn = null; }, true);
@@ -134,10 +140,18 @@ const updater = createUpdater({
     } catch { return null; }
   },
   serviceWorker: 'serviceWorker' in navigator && location.protocol !== 'file:' ? navigator.serviceWorker : null,
-  cacheExists: async (version) => { try { return await caches.has(`kalorit-app-${version}`); } catch { return false; } },
+  // a cache that exists but lacks the page is a failed install, not an installed build
+  cacheExists: async (version) => {
+    try {
+      const name = `kalorit-app-${version}`;
+      return (await caches.has(name)) && !!(await (await caches.open(name)).match('index.html'));
+    } catch { return false; }
+  },
   isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
     || (state.view === 'add' && $('#search').value.trim() !== '')
     || (typedIn && typedIn === document.activeElement)   // mid-typing in a field (settings, weight, sync code, key)
+    // a key typed or pasted but not saved yet, even after tapping "show" or leaving to compare it
+    || ($('#api-key') && $('#api-key').value.trim() !== savedApiKey)
     // the chat lives in memory: a reload would drop its replies and their undo / edit buttons
     || (state.view === 'chat' && (chat.msgs.some((m) => m.ids && !m.undone) || $('#chat-input').value.trim() !== '')),
   // the camera or picker is open over the app, a paid recognition is running, or its items await approval
@@ -561,9 +575,10 @@ export function confirmItems(items, { meal = state.addMeal, editId = null } = {}
         renderToday();
         return resolve([]);
       }
+      if (!editId && rows.every((r) => r.grams <= 0)) { toast('לא נוסף: הכמות היא 0'); return resolve([]); }
       for (const r of rows) {
         if (r.grams <= 0) continue;
-        if (!String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
+        if (!r.food.fromEntry && !String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
         const entry = {
           date: state.date, meal: mealId, foodId: r.food.id, name: r.food.n,
           amount: r.amount, unit: r.unit, grams: r.grams, ...r.n, ts: Date.now(),
@@ -1250,24 +1265,34 @@ async function renderWeights() {
 
 // ---------- settings ----------
 
+// fields the user changed since Settings opened: a render that finishes late must not overwrite them
+const settingsTouched = new Set();
+
 async function renderSettings() {
+  settingsTouched.clear();
+  // read everything first, then fill the form in one go, skipping what the user already changed
   const mode = await getSetting('targetMode', 'calc');
   const p = (await getSetting('profile', null)) || { sex: 'female', age: '', height: '', weight: '', activity: 1.375, goal: -500 };
-  $('#p-activity').innerHTML = ACTIVITY.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
-  $('#p-goal').innerHTML = GOALS.map((g) => `<option value="${g.id}">${g.label}</option>`).join('');
-  $('#p-sex').value = p.sex; $('#p-age').value = p.age; $('#p-height').value = p.height;
+  const latestWeigh = await db.weights.orderBy('date').last();
+  const manualTarget = (await getSetting('manualTarget', null)) || state.target;
+  const apiKey = (await getSetting('apiKey', '')) || '';
+  const set = (id, value) => { if (!settingsTouched.has(id)) $(`#${id}`).value = value; };
+  if (!$('#p-activity').options.length) $('#p-activity').innerHTML = ACTIVITY.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
+  if (!$('#p-goal').options.length) $('#p-goal').innerHTML = GOALS.map((g) => `<option value="${g.id}">${g.label}</option>`).join('');
+  set('p-sex', p.sex); set('p-age', p.age); set('p-height', p.height);
   // the current weight is the latest weigh-in (History); remember what was shown, so saving other
   // settings does not record it again as today's weigh-in
-  const latestWeigh = await db.weights.orderBy('date').last();
-  $('#p-weight').value = latestWeigh?.kg ?? p.weight;
-  $('#p-weight').dataset.shown = $('#p-weight').value;
-  $('#p-activity').value = String(p.activity); $('#p-goal').value = String(p.goal);
-  $('#manual-target').value = (await getSetting('manualTarget', null)) || state.target;
-  $('#api-key').value = (await getSetting('apiKey', '')) || '';
+  const shownWeight = String(latestWeigh?.kg ?? p.weight ?? '');
+  set('p-weight', shownWeight);
+  $('#p-weight').dataset.shown = shownWeight;
+  set('p-activity', String(p.activity)); set('p-goal', String(p.goal));
+  set('manual-target', manualTarget);
+  set('api-key', apiKey);
+  savedApiKey = apiKey;
   $('#app-version').textContent = APP_VERSION;
   $('#app-built').textContent = builtText(BUILD.builtAt);
   renderSyncStatus();
-  setTargetMode(mode);
+  if (!settingsTouched.has('target-mode')) setTargetMode(mode);
   updateCalcPreview();
 }
 
@@ -1364,6 +1389,7 @@ function editEntry(entry) {
   const per100 = (v) => (entry.grams > 0 ? Math.round(((Number(v) || 0) / entry.grams) * 1000) / 10 : 0);
   const food = state.byId.get(entry.foodId) || {
     id: entry.foodId, n: String(entry.name ?? ''), kcal: per100(entry.kcal), p: per100(entry.p), c: per100(entry.c), f: per100(entry.f), m: [],
+    fromEntry: true,   // only for this edit: never saved back as a food (it may have been deleted on purpose)
   };
   return confirmItems([{ food, amount: entry.amount ?? entry.grams, unit: entry.unit, grams: entry.grams }], { meal: entry.meal, editId: entry.id });
 }
@@ -1530,6 +1556,8 @@ function bind() {
   });
   $('#calc-fields').addEventListener('input', updateCalcPreview);
   $('#target-form').onsubmit = saveTarget;
+  for (const ev of ['input', 'change']) $('#view-settings').addEventListener(ev, (e) => { if (e.target.id) settingsTouched.add(e.target.id); });
+  $('#target-mode').addEventListener('click', () => settingsTouched.add('target-mode'), true);
   $('#export-btn').onclick = exportBackup;
   $('#import-input').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#install-btn').onclick = installApp;
@@ -1562,7 +1590,12 @@ function bind() {
   };
   window.addEventListener('online', () => sync.syncNow());
 
-  $('#api-key-save').onclick = async () => { await setSetting('apiKey', $('#api-key').value.trim()); toast('המפתח נשמר בטלפון'); };
+  $('#api-key-save').onclick = async () => {
+    const key = $('#api-key').value.trim();
+    await setSetting('apiKey', key);
+    savedApiKey = key;
+    toast('המפתח נשמר בטלפון');
+  };
 
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => {

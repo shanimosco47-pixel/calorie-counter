@@ -451,6 +451,8 @@ test('deletes kept from a disconnect are not replayed into a different sync code
   await a.sync.disconnect();
   remote.online = true;
   await a.sync.connect(codeB);                             // joins a different vault
+  await a.sync.syncNow();                                  // and syncs again: nothing may be re-sent
+  await a.sync.syncNow();
   const inB = remote.rows.get(`${codeB}|weights|2026-10-20`);
   assert.equal(inB.data?.kg, 80, 'vault B keeps its weight');
 
@@ -540,4 +542,58 @@ test('a backup with a barcode longer than 64 keeps the food and drops the barcod
   const f = await a.db.myFoods.get('u9');
   assert.equal(f.n, 'מוצר ארוך');
   assert.equal(f.barcode, undefined);
+});
+
+test('audit 2: rows from before sync (no mt) still reach the cloud', async () => {
+  const remote = fakeRemote();
+  remote.push = ((orig) => async (code, batch) => {
+    const bad = batch.filter((r) => !(r.ts > 0));                 // like sync_push2: ts must be > 0
+    const res = await orig(code, batch.filter((r) => r.ts > 0));
+    return { applied: res.applied, rejected: [...res.rejected, ...bad.map((r) => ({ kind: r.kind, id: r.id, reason: 'invalid' }))] };
+  })(remote.push);
+  const a = device(remote);
+  await a.db.weights.put({ date: '2026-01-01', kg: 70 });          // written by the pre-sync app: no mt
+  await a.db.myFoods.put({ id: 'u1', n: 'x', kcal: 1, m: [] });
+  const code = generateCode();
+  await a.sync.connect(code);
+  assert.ok(remote.rows.get(`${code}|weights|2026-01-01`));
+  assert.ok(remote.rows.get(`${code}|myFoods|u1`));
+  assert.equal((await a.sync.status()).skipped, 0);
+});
+
+test('audit 2: restore on a connected phone converges with the cloud', async () => {
+  const remote = fakeRemote();
+  const a = device(remote);
+  const b = device(remote);
+  const code = generateCode();
+  await a.sync.connect(code);
+  await b.sync.connect(code);
+  await a.store.put('entries', entry({ id: 'Y', kcal: 100 }));
+  await a.sync.syncNow(); await b.sync.syncNow();
+  const backup = await b.store.dumpAll();
+  await tick();
+  await a.store.put('entries', { ...(await a.db.log.get('Y')), kcal: 999 });
+  await a.sync.syncNow();
+  for (let i = 0; i < 3; i++) await b.sync.syncNow();            // lets lastPull move well past A's edit
+  await b.store.restoreAll(backup);
+  await b.sync.syncNow(); await b.sync.syncNow();
+  assert.equal((await b.db.log.get('Y')).kcal, 999);
+});
+
+test('audit 2: re-adding after a delete wins even against a phone whose clock is ahead', async () => {
+  const remote = fakeRemote();
+  const a = device(remote);
+  const b = device(remote);
+  const code = generateCode();
+  await a.sync.connect(code);
+  await b.sync.connect(code);
+  const ahead = Date.now() + 3600000;
+  await a.db.meta.put({ key: 'hw|favorites|t5', value: ahead - 1 });
+  await a.store.put('favorites', { foodId: 't5' });
+  await a.store.remove('favorites', 't5');                       // A's delete stamped an hour ahead
+  await a.sync.syncNow(); await b.sync.syncNow();
+  await b.store.put('favorites', { foodId: 't5' });               // B re-adds with its normal clock
+  await b.sync.syncNow(); await a.sync.syncNow();
+  assert.ok(await a.db.favorites.get('t5'));
+  assert.ok(await b.db.favorites.get('t5'));
 });

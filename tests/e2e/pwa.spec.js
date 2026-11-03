@@ -53,7 +53,7 @@ test('service worker registers and the app works offline', async ({ page, contex
   expect(errors).toEqual([]);
 });
 
-test('an updated page and manifest reach the phone on the next open', async ({ page }, info) => {
+test('a new deploy (page and manifest) reaches the phone on a following open', async ({ page }, info) => {
   // serve a private copy of the site so the test can change files on disk, like a real deploy
   const root = info.outputPath('site');
   fs.mkdirSync(root, { recursive: true });
@@ -78,8 +78,11 @@ test('an updated page and manifest reach the phone on the next open', async ({ p
     const man = path.join(root, 'kalorit.webmanifest');
     fs.writeFileSync(man, fs.readFileSync(man, 'utf8').replace('"short_name": "קלורית"', '"short_name": "קלורית v2"'));
 
-    await page.reload();
-    await expect(page).toHaveTitle('קלורית v2');
+    // a deploy also gives the worker a new cache name (scripts/build_site.sh does this per build):
+    // the new build installs as a whole and its page shows on a following open
+    const sw = path.join(root, 'sw.js');
+    fs.writeFileSync(sw, fs.readFileSync(sw, 'utf8').replace(/^const VERSION = '[^']*';/m, "const VERSION = 'kalorit-app-test-v2';"));
+    await expect.poll(async () => { await page.reload(); return page.title(); }, { timeout: 20000 }).toBe('קלורית v2');
     expect((await page.evaluate(() => fetch('kalorit.webmanifest').then((r) => r.json()))).short_name).toBe('קלורית v2');
   } finally {
     server.close();

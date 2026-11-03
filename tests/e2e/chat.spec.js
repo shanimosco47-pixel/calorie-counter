@@ -64,7 +64,7 @@ test('chat: "yesterday evening" lands on yesterday\'s dinner; edit keeps the day
   await expect(page.getByTestId('chat-item')).toContainText('אתמול');
 
   const yesterday = await page.evaluate(async () => { const { isoDate, addDays } = await import('./lib/calc.js'); return addDays(isoDate(), -1); });
-  let [e] = await entries(page);
+  const [e] = await entries(page);
   expect([e.meal, e.date]).toEqual(['dinner', yesterday]);
 
   await page.getByTestId('chat-edit').click();
@@ -72,8 +72,8 @@ test('chat: "yesterday evening" lands on yesterday\'s dinner; edit keeps the day
   await page.getByTestId('amount').fill('300');
   await page.getByTestId('confirm-save').click();
   await expect(page.getByTestId('confirm-sheet')).toBeHidden();
-  [e] = await entries(page);
-  expect([e.date, e.grams]).toEqual([yesterday, 300]);
+  // the sheet closes first and the edit is saved right after: wait for it
+  await expect.poll(async () => (await entries(page)).map((x) => [x.date, x.grams])).toEqual([[yesterday, 300]]);
   await expect(page.getByTestId('chat-item')).toContainText('300');
 });
 
