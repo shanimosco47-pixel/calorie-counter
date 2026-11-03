@@ -451,6 +451,8 @@ test('deletes kept from a disconnect are not replayed into a different sync code
   await a.sync.disconnect();
   remote.online = true;
   await a.sync.connect(codeB);                             // joins a different vault
+  await a.sync.syncNow();                                  // and syncs again: nothing may be re-sent
+  await a.sync.syncNow();
   const inB = remote.rows.get(`${codeB}|weights|2026-10-20`);
   assert.equal(inB.data?.kg, 80, 'vault B keeps its weight');
 

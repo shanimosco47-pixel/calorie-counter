@@ -117,8 +117,6 @@ function builtText(iso) {
 // the field the user has typed into since focusing it (unsaved text an update reload would lose)
 let typedIn = null;
 document.addEventListener('focusin', () => { typedIn = null; });
-document.addEventListener('submit', () => { typedIn = null; }, true);   // saved: nothing unsaved left
-document.addEventListener('change', (e) => { if (e.target.matches?.('select, input[type=checkbox], input[type=radio]')) typedIn = null; }, true);
 // html5-qrcode's video.play() is interrupted when the scanner is closed while the camera starts;
 // that is expected, not an error
 window.addEventListener('unhandledrejection', (e) => {
@@ -141,7 +139,13 @@ const updater = createUpdater({
     } catch { return null; }
   },
   serviceWorker: 'serviceWorker' in navigator && location.protocol !== 'file:' ? navigator.serviceWorker : null,
-  cacheExists: async (version) => { try { return await caches.has(`kalorit-app-${version}`); } catch { return false; } },
+  // a cache that exists but lacks the page is a failed install, not an installed build
+  cacheExists: async (version) => {
+    try {
+      const name = `kalorit-app-${version}`;
+      return (await caches.has(name)) && !!(await (await caches.open(name)).match('index.html'));
+    } catch { return false; }
+  },
   isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
     || (state.view === 'add' && $('#search').value.trim() !== '')
     || (typedIn && typedIn === document.activeElement),   // mid-typing in a field (settings, weight, sync code, key)

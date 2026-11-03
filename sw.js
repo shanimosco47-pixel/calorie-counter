@@ -25,7 +25,11 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
+  // a failed install leaves no half-filled cache behind (the updater would take it for installed)
+  event.waitUntil(caches.open(VERSION)
+    .then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
+    .catch(async (err) => { await caches.delete(VERSION); throw err; })
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
