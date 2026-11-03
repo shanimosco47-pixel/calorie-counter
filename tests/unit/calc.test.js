@@ -143,3 +143,15 @@ test('audit: target minimum depends on sex, is capped, and says when it was clam
   assert.deepEqual([targetInfo(huge).target, targetInfo(huge).clamped], [MAX_TARGET, 'high']);
   assert.equal(targetInfo({ sex: 'female', weight: 65, height: 165, age: 35, activity: 1.375, goal: -500 }).clamped, null);
 });
+
+test('audit 2: real single servings keep their unit; rich foods keep the small size', async () => {
+  const { readFileSync } = await import('node:fs');
+  const data = JSON.parse(readFileSync(new URL('../../data/tzameret.json', import.meta.url)));
+  const unitOf = (re) => defaultAmount(data.foods.find((x) => re.test(x.n))).unit;
+  assert.equal(unitOf(/^דג טונה בשמן סויה, סטארקיסט/), '905');       // the tin
+  assert.equal(unitOf(/^משקה חלב, שוקו 2% שומן, תנובה/), '903');     // the bag
+  assert.equal(unitOf(/^קרואסון שוקולד, בונז'ור/), '102');           // small croissant
+  assert.equal(unitOf(/^חטיף בוטנים, שוש רגיל/), '102');
+  assert.equal(unitOf(/^בשר בקר, פילה שריר, מבושל/), '802');         // a 550 kcal steak portion is fine
+  assert.equal(unitOf(/^שוקו, אבקה ממותקת/), '300');                // powders stay spoon-measured
+});

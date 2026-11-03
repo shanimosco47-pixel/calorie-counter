@@ -116,6 +116,12 @@ test('audit: common spellings and plurals find the right food', () => {
   assert.match(top('הודו'), /^בשר הודו/);
 });
 
+test('audit 2: plural forms never beat what was typed', () => {
+  const top = (q) => matchFood(q, index, { limit: 1 })[0]?.n || '';
+  assert.match(top('פירה'), /פירה/);
+  assert.match(top('לחמנייה'), /^לחמניה קלה/);
+});
+
 test('long queries keep their trailing qualifiers (Codex P2)', () => {
   const top = matchFood('גבינה לבנה עם זיתים 9%', index, { limit: 10 });
   assert.ok(top.length === 0 || top.every((f) => /9%/.test(f.n)), top.map((f) => f.n).join(' | '));
