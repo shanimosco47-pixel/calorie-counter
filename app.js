@@ -958,24 +958,33 @@ async function renderWeights() {
 
 // ---------- settings ----------
 
+// fields the user changed since Settings opened: a render that finishes late must not overwrite them
+const settingsTouched = new Set();
+
 async function renderSettings() {
+  settingsTouched.clear();
+  // read everything first, then fill the form in one go, skipping what the user already changed
   const mode = await getSetting('targetMode', 'calc');
   const p = (await getSetting('profile', null)) || { sex: 'female', age: '', height: '', weight: '', activity: 1.375, goal: -500 };
-  $('#p-activity').innerHTML = ACTIVITY.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
-  $('#p-goal').innerHTML = GOALS.map((g) => `<option value="${g.id}">${g.label}</option>`).join('');
-  $('#p-sex').value = p.sex; $('#p-age').value = p.age; $('#p-height').value = p.height;
+  const latestWeigh = await db.weights.orderBy('date').last();
+  const manualTarget = (await getSetting('manualTarget', null)) || state.target;
+  const apiKey = (await getSetting('apiKey', '')) || '';
+  const set = (id, value) => { if (!settingsTouched.has(id)) $(`#${id}`).value = value; };
+  if (!$('#p-activity').options.length) $('#p-activity').innerHTML = ACTIVITY.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
+  if (!$('#p-goal').options.length) $('#p-goal').innerHTML = GOALS.map((g) => `<option value="${g.id}">${g.label}</option>`).join('');
+  set('p-sex', p.sex); set('p-age', p.age); set('p-height', p.height);
   // the current weight is the latest weigh-in (History); remember what was shown, so saving other
   // settings does not record it again as today's weigh-in
-  const latestWeigh = await db.weights.orderBy('date').last();
-  $('#p-weight').value = latestWeigh?.kg ?? p.weight;
-  $('#p-weight').dataset.shown = $('#p-weight').value;
-  $('#p-activity').value = String(p.activity); $('#p-goal').value = String(p.goal);
-  $('#manual-target').value = (await getSetting('manualTarget', null)) || state.target;
-  $('#api-key').value = (await getSetting('apiKey', '')) || '';
+  const shownWeight = String(latestWeigh?.kg ?? p.weight ?? '');
+  set('p-weight', shownWeight);
+  $('#p-weight').dataset.shown = shownWeight;
+  set('p-activity', String(p.activity)); set('p-goal', String(p.goal));
+  set('manual-target', manualTarget);
+  set('api-key', apiKey);
   $('#app-version').textContent = APP_VERSION;
   $('#app-built').textContent = builtText(BUILD.builtAt);
   renderSyncStatus();
-  setTargetMode(mode);
+  if (!settingsTouched.has('target-mode')) setTargetMode(mode);
   updateCalcPreview();
 }
 
@@ -1219,6 +1228,8 @@ function bind() {
   });
   $('#calc-fields').addEventListener('input', updateCalcPreview);
   $('#target-form').onsubmit = saveTarget;
+  for (const ev of ['input', 'change']) $('#view-settings').addEventListener(ev, (e) => { if (e.target.id) settingsTouched.add(e.target.id); });
+  $('#target-mode').addEventListener('click', () => settingsTouched.add('target-mode'), true);
   $('#export-btn').onclick = exportBackup;
   $('#import-input').onchange = (e) => { const f = e.target.files[0]; if (f) importBackup(f); e.target.value = ''; };
   $('#install-btn').onclick = installApp;
