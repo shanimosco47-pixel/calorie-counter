@@ -116,6 +116,7 @@ function builtText(iso) {
 
 // the field the user has typed into since focusing it (unsaved text an update reload would lose)
 let typedIn = null;
+let savedApiKey = '';   // what the API key field showed when loaded or last saved
 document.addEventListener('focusin', () => { typedIn = null; });
 // html5-qrcode's video.play() is interrupted when the scanner is closed while the camera starts;
 // that is expected, not an error
@@ -148,7 +149,9 @@ const updater = createUpdater({
   },
   isBusy: () => !!document.querySelector('dialog[open]') || store.isWriting()
     || (state.view === 'add' && $('#search').value.trim() !== '')
-    || (typedIn && typedIn === document.activeElement),   // mid-typing in a field (settings, weight, sync code, key)
+    || (typedIn && typedIn === document.activeElement)   // mid-typing in a field (settings, weight, sync code, key)
+    // a key typed or pasted but not saved yet, even after tapping "show" or leaving to compare it
+    || ($('#api-key') && $('#api-key').value.trim() !== savedApiKey),
   // the camera or picker is open over the app, a paid recognition is running, or its items await approval
   keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming || !!photo.stream,
   reload: () => location.reload(),
@@ -1046,6 +1049,7 @@ async function renderSettings() {
   set('p-activity', String(p.activity)); set('p-goal', String(p.goal));
   set('manual-target', manualTarget);
   set('api-key', apiKey);
+  savedApiKey = apiKey;
   $('#app-version').textContent = APP_VERSION;
   $('#app-built').textContent = builtText(BUILD.builtAt);
   renderSyncStatus();
@@ -1327,7 +1331,12 @@ function bind() {
   };
   window.addEventListener('online', () => sync.syncNow());
 
-  $('#api-key-save').onclick = async () => { await setSetting('apiKey', $('#api-key').value.trim()); toast('המפתח נשמר בטלפון'); };
+  $('#api-key-save').onclick = async () => {
+    const key = $('#api-key').value.trim();
+    await setSetting('apiKey', key);
+    savedApiKey = key;
+    toast('המפתח נשמר בטלפון');
+  };
 
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => {
