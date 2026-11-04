@@ -193,13 +193,15 @@ test('analyzeText: sends the key, maps HTTP errors like photos', async () => {
 
 test('text request: earlier messages and what they logged come before the new one; corrections are parsed', () => {
   const history = [
-    { text: 'שניצל 150 גרם בערב', logged: [{ name: 'שניצל עוף ותירס, מאמא עוף', grams: 150, where: 'ערב' }] },
-    { text: 'מה נשמע', logged: null },
+    { text: 'שניצל 150 גרם בערב', status: 'logged', correctable: true, logged: [{ name: 'שניצל עוף ותירס, מאמא עוף', grams: 150, where: 'ערב' }] },
+    { text: 'מה נשמע', status: 'none', logged: null },
+    { text: 'קפה', status: 'undone', logged: null },
   ];
   const r = buildTextRequest('לא מאמא עוף, שניצל ביתי', { now: new Date(2026, 10, 4, 20, 0), history });
   const c = r.messages[0].content;
-  assert.match(c, /1\. "שניצל 150 גרם בערב" — נרשם: שניצל עוף ותירס, מאמא עוף 150 גרם \(ערב\)/);
-  assert.match(c, /2\. "מה נשמע" — לא נשאר ביומן/);
+  assert.match(c, /1\. "שניצל 150 גרם בערב" — נרשם \(אפשר לתקן\): שניצל עוף ותירס, מאמא עוף 150 גרם \(ערב\)/);
+  assert.match(c, /2\. "מה נשמע" — לא נרשם דבר/);
+  assert.match(c, /3\. "קפה" — בוטל/);
   assert.match(c, /ההודעה החדשה:\nלא מאמא עוף, שניצל ביתי$/);
   assert.ok(TEXT_RESPONSE_SCHEMA.required.includes('replaces_previous'));
   assert.equal(historyText([]), '');

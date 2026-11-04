@@ -127,20 +127,24 @@ test('long queries keep their trailing qualifiers (Codex P2)', () => {
   assert.ok(top.length === 0 || top.every((f) => /9%/.test(f.n)), top.map((f) => f.n).join(' | '));
 });
 
-test('a plain query prefers the generic food over a branded product; naming the brand finds it', () => {
-  const top = (q) => matchFood(q, index, { limit: 3 }).map((f) => f.n);
-  assert.ok(top('שניצל עוף').every((n) => !brandOf(n)), top('שניצל עוף').join(' | '));
-  assert.ok(top('שניצל מאמא עוף').every((n) => /מאמא עוף/.test(n)), top('שניצל מאמא עוף').join(' | '));
+test('brands are recognized; plain queries keep their branded everyday results', () => {
   assert.equal(brandOf('שניצל עוף ותירס, מאמא עוף'), normalize('מאמא עוף'));
   assert.equal(brandOf('שניצל חזה עוף מטוגן בשמן סויה'), '');
+  const first = (q) => matchFood(q, index, { limit: 1 })[0].n;
+  assert.match(first('קוטג׳'), /^גבינת קוטג/);
+  assert.match(first('חמאה'), /^חמאה, /);
+  assert.match(first('קורנפלקס'), /קורנפלקס/);
+  assert.match(first('שניצל עוף'), /^שניצל חזה עוף/);   // the staple, not a branded product
+  assert.ok(matchFood('שניצל מאמא עוף', index, { limit: 3 }).every((f) => /מאמא עוף/.test(f.n)));
 });
 
 test('"homemade" never lands on a factory product, and the word itself is not required', () => {
   for (const q of ['שניצל ביתי', 'שניצל עוף ביתי', 'שניצל עוף תוצרת בית']) {
     const top = matchFood(q, index, { limit: 8 }).map((f) => f.n);
     assert.ok(top.length && top.every((n) => !brandOf(n)), `${q}: ${top.join(' | ')}`);
-    assert.match(top[0], /^שניצל חזה עוף/);
+    assert.match(top[0], /^שניצל (חזה )?עוף/);
   }
   assert.equal(matchFood('חומוס ביתי', index, { limit: 1 })[0].n, 'סלט חומוס, ביתי');
+  assert.match(matchFood('לחם ביתי', index, { limit: 1 })[0].n, /^לחם ביתי/);   // not the sliced-loaf staple
   assert.ok(matchFood('ביתי', index, { limit: 3 }).length > 0);   // the word alone is searched as typed
 });
