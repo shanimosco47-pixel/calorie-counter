@@ -1,7 +1,7 @@
 import { store, db, put, remove, newId, getSetting, setSetting, dumpAll, restoreAll, recentFoods } from './lib/db.js';
 import { createSync } from './lib/sync.js';
 import { supabaseRemote } from './lib/remote.js';
-import { buildIndex, matchFood } from './lib/match.js';
+import { buildIndex, matchFood, normalize } from './lib/match.js';
 import {
   MEALS, ACTIVITY, GOALS, gramsFor, nutrientsFor, sumEntries, totalsByMeal, dailyTarget, targetInfo,
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
@@ -975,8 +975,12 @@ async function logChat(text, pending) {
     const target = replacesPrevious && last && !last.undone && !last.replacedBy ? last : null;
     const prev = target ? (await db.log.bulkGet(target.ids)).filter(Boolean) : [];
     if (prev.length) {
+      // each corrected item takes after the replaced entry it is most like by name, else the same position
+      const stems = (t) => new Set(normalize(t).split(' ').filter((w) => w.length >= 2).map((w) => w.slice(0, 3)));
       for (const [i, r] of items.entries()) {
-        const was = prev[Math.min(i, prev.length - 1)];
+        const mine = stems(`${r.query} ${r.food.n}`);
+        const overlap = (e) => [...stems(e.name)].filter((x) => mine.has(x)).length;
+        const was = prev.reduce((a, e) => (overlap(e) > overlap(a) ? e : a), prev[Math.min(i, prev.length - 1)]);
         if (!r.meal) r.meal = was.meal;
         if (!r.dayOffset) r.date = was.date;
       }
@@ -1024,7 +1028,12 @@ async function undoChat(id) {
     m.undone = false;
     if (old) old.replacedBy = m.id;
     for (const e of prev) await put('entries', e);
-    if (old) for (const e of m.replaced.entries) await remove('entries', e.id);
+    if (old) {
+      // what is in the diary now, so an edit made meanwhile comes back with the next undo
+      const now = (await db.log.bulkGet(m.replaced.entries.map((e) => e.id))).filter(Boolean);
+      for (const e of now) await remove('entries', e.id);
+      m.replaced.entries = now;
+    }
     renderChat();
     if (state.view === 'today') renderToday();
   });
