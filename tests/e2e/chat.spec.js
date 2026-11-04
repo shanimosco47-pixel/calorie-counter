@@ -131,7 +131,7 @@ test('chat: speaking fills the box and sends when the speech ends', async ({ pag
 test('chat: a second message sent while the first is logging waits its turn; both are logged', async ({ page }) => {
   const order = [];
   await page.route('https://api.anthropic.com/**', async (route) => {
-    const text = route.request().postDataJSON().messages[0].content;
+    const text = route.request().postDataJSON().messages[0].content.split('ההודעה החדשה:').pop();
     const first = text.includes('פיתה');
     order.push(first ? 'first' : 'second');
     if (first) await new Promise((r) => setTimeout(r, 800));   // the first answer is slow
@@ -197,4 +197,45 @@ test('chat: speech that ends without a final result still sends what was heard',
   await page.getByTestId('chat-mic').click();
   await expect(page.getByTestId('chat-item')).toHaveCount(2);
   expect(body.messages[0].content).toContain('הבוקר אכלתי פיתה');
+});
+
+test('chat: a correction replaces what the last message logged; undo brings it back', async ({ page }) => {
+  const bodies = [];
+  const replies = [
+    answer([item({ name: 'שניצל', query: 'שניצל עוף', grams: 150, kcal_per_100g: 260, meal: 'dinner' })]),
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({
+      items: [item({ name: 'שניצל ביתי', query: 'שניצל עוף ביתי', grams: 150, kcal_per_100g: 260, meal: 'dinner' })],
+      reply: '', replaces_previous: true,
+    }) }] },
+  ];
+  await page.route('https://api.anthropic.com/**', (route) => {
+    bodies.push(route.request().postDataJSON());
+    return route.fulfill({ json: replies[bodies.length - 1] });
+  });
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('שניצל 150 גרם בערב');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+
+  await page.getByTestId('chat-input').fill('לא, שניצל ביתי');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-reply').last()).toContainText('עודכן ביומן');
+  // Claude saw the first message and what it logged
+  expect(bodies[1].messages[0].content).toMatch(/1\. "שניצל 150 גרם בערב" — נרשם: שניצל/);
+  await expect(page.getByTestId('chat-reply').first()).toContainText('הוחלף');
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  let saved = await entries(page);
+  expect(saved).toHaveLength(1);
+  expect(saved[0].name).toMatch(/^שניצל חזה עוף/);   // the generic food, not a branded product
+
+  // undoing the correction restores the original entry
+  await page.getByTestId('chat-undo').click();
+  await expect(page.getByTestId('chat-reply').last()).toContainText('בוטל');
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  saved = await entries(page);
+  expect(saved).toHaveLength(1);
+  // and the toast's undo puts the correction back
+  await page.locator('#toast-undo').click();
+  await expect(page.getByTestId('chat-reply').first()).toContainText('הוחלף');
+  await expect.poll(async () => (await entries(page)).length).toBe(1);
 });
