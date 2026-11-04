@@ -1,7 +1,7 @@
 import { store, db, put, remove, newId, getSetting, setSetting, dumpAll, restoreAll, recentFoods } from './lib/db.js';
 import { createSync } from './lib/sync.js';
 import { supabaseRemote } from './lib/remote.js';
-import { buildIndex, matchFood } from './lib/match.js';
+import { buildIndex, matchFood, normalize } from './lib/match.js';
 import {
   MEALS, ACTIVITY, GOALS, gramsFor, nutrientsFor, sumEntries, totalsByMeal, dailyTarget, targetInfo,
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
@@ -814,7 +814,9 @@ function closePhoto() {
 
 // The owner's choice: the chat logs straight to the diary (no confirm sheet); every reply shows what was
 // saved, with undo and edit. Messages live in memory only: never stored, never synced.
-// msgs: { id, me?, text?, ids?, undone?, error?, pending?, settings? }
+// msgs: { id, me?, text?, ids?, undone?, error?, pending?, settings?, replaced?, replacedBy? }
+// A correction ("לא שניצל מאמא עוף, שניצל ביתי") replaces what the latest reply logged: that reply gets
+// replacedBy (the correction's id) and the correction keeps replaced { id, entries } so undo restores them.
 const chat = { msgs: [], seq: 0, busy: 0, queue: Promise.resolve(), rec: null, listening: false, renderGen: 0, scrolledFor: '' };
 
 // Saves resolved items as diary entries. Returns the saved entry ids in order, which of them carry
@@ -829,7 +831,7 @@ async function saveItemsDirect(items, now = new Date()) {
       // a food from outside the database (Claude's estimate) is kept, so the entry stays editable
       if (!String(r.food.id).startsWith('t') && !state.byId.has(r.food.id)) await put('myFoods', r.food);
       const entry = {
-        id: newId(), date: addDays(today, r.dayOffset || 0), meal: r.meal || mealForHour(now.getHours()),
+        id: newId(), date: r.date || addDays(today, r.dayOffset || 0), meal: r.meal || mealForHour(now.getHours()),
         foodId: r.food.id, name: r.food.n, amount: r.amount, unit: r.unit, grams, ...nutrientsFor(r.food, grams),
         ts: Date.now() + i,   // keeps the spoken order in the diary
       };
@@ -865,6 +867,9 @@ async function renderChat() {
     }
     const rows = (m.ids || []).map((id) => entries.get(id)).filter(Boolean);
     if (!m.ids?.length) return `<div class="bubble bot" data-testid="chat-reply">${esc(m.text)}</div>`;
+    if (m.replacedBy && !m.undone) {
+      return `<div class="bubble bot" data-testid="chat-reply"><span class="undone">הוחלף בתיקון שלמטה</span></div>`;
+    }
     if (m.undone || !rows.length) {
       return `<div class="bubble bot" data-testid="chat-reply"><span class="undone">${m.undone ? 'בוטל, לא נרשם ליומן' : 'הפריטים כבר לא ביומן'}</span></div>`;
     }
@@ -878,7 +883,7 @@ async function renderChat() {
         <button type="button" class="link-btn" data-chat-edit="${esc(e.id)}" data-testid="chat-edit">עריכה</button></li>`;
     }).join('');
     return `<div class="bubble bot" data-testid="chat-reply">
-      <div>${m.text ? esc(m.text) : 'נרשם ליומן ✓'}</div>
+      <div>${m.text ? esc(m.text) : m.replaced ? 'עודכן ביומן ✓' : 'נרשם ליומן ✓'}</div>
       <ul class="list compact">${items}</ul>
       <div class="total">סה״כ ${fmt(total)} קק״ל</div>
       <div class="actions"><button type="button" class="btn secondary" data-chat-undo="${m.id}" data-testid="chat-undo">ביטול</button></div>
@@ -916,6 +921,39 @@ function sendChat(text) {
   return chat.queue;
 }
 
+// What the chat said before `pending`, for Claude to read a follow-up or a correction: each earlier
+// message with what of it is still in the diary. `last` is the reply a correction can replace: the latest
+// one that logged something, while some of it is still in the diary (only that part is shown, and only
+// that part is replaced). Claude sees which message that is.
+async function chatContext(pending) {
+  const before = chat.msgs.slice(0, chat.msgs.indexOf(pending));
+  const all = before.flatMap((m) => m.ids || []);
+  const live = new Map((await db.log.bulkGet(all)).filter(Boolean).map((e) => [e.id, e]));
+  const history = [];
+  let last = null;
+  let lastAt = -1;
+  for (const [i, m] of before.entries()) {
+    if (!m.me) continue;
+    const reply = before[i + 1];
+    if (!reply || reply.me || reply.pending) continue;
+    const rows = (reply.ids || []).map((id) => live.get(id)).filter(Boolean);
+    const status = !reply.ids?.length ? 'none' : reply.undone ? 'undone' : reply.replacedBy ? 'replaced' : rows.length ? 'logged' : 'deleted';
+    history.push({
+      text: m.text,
+      status,
+      logged: status === 'logged' ? rows.map((e) => ({
+        name: e.name, grams: e.grams, where: [MEALS.find((x) => x.id === e.meal)?.label, dayWord(e.date)].filter(Boolean).join(' '),
+      })) : null,
+    });
+    if (reply.ids?.length) { last = status === 'logged' ? reply : null; lastAt = history.length - 1; }
+  }
+  if (last) history[lastAt].correctable = true;
+  const shown = history.slice(-4);
+  // a correctable message that scrolled out of what Claude sees cannot be corrected
+  if (last && !shown.some((h) => h.correctable)) last = null;
+  return { history: shown, last };
+}
+
 async function logChat(text, pending) {
   const finish = (m) => {
     const at = chat.msgs.indexOf(pending);
@@ -924,37 +962,80 @@ async function logChat(text, pending) {
     if (state.view === 'today') renderToday();
   };
   let saved = null;
+  let replaced = null;
   try {
     const apiKey = await getSetting('apiKey', '');
     if (!apiKey) throw new VisionError('no_key', 'no key');
     const now = new Date();
-    const { items: recognized, reply } = await analyzeText({ apiKey, text, now });
+    const { history, last } = await chatContext(pending);
+    const { items: recognized, reply, replacesPrevious } = await analyzeText({ apiKey, text, now, history });
     if (!recognized.length) { finish({ text: reply || CHAT_ERROR_TEXT.empty }); return; }
-    saved = await saveItemsDirect(resolveItems(recognized), now);
+    const items = resolveItems(recognized);
+    // a correction keeps the meal and day of what it corrects, unless it names others
+    const target = replacesPrevious && last && !last.undone && !last.replacedBy ? last : null;
+    const prev = target ? (await db.log.bulkGet(target.ids)).filter(Boolean) : [];
+    if (prev.length) {
+      // each corrected item takes after the replaced entry it is most like by name, else the same position
+      const stems = (t) => new Set(normalize(t).split(' ').filter((w) => w.length >= 2).map((w) => w.slice(0, 3)));
+      for (const [i, r] of items.entries()) {
+        const mine = stems(`${r.query} ${r.food.n}`);
+        const overlap = (e) => [...stems(e.name)].filter((x) => mine.has(x)).length;
+        const was = prev.reduce((a, e) => (overlap(e) > overlap(a) ? e : a), prev[Math.min(i, prev.length - 1)]);
+        if (!r.meal) r.meal = was.meal;
+        if (!r.dayOffset) r.date = was.date;
+      }
+    }
+    saved = await saveItemsDirect(items, now);
     if (saved.error) throw saved.error;
     if (!saved.ids.length) { finish({ text: reply || CHAT_ERROR_TEXT.empty }); return; }
-    finish({ text: reply, ids: saved.ids, estimated: saved.estimated });
+    // the new items are saved, so what they replace can go. Claimed before any wait, so an undo tapped
+    // meanwhile sees it; kept even if removing stops partway, so undo can still bring all of it back.
+    if (prev.length && !target.undone && !target.replacedBy) {
+      target.replacedBy = pending.id;
+      replaced = { id: target.id, entries: prev };
+      for (const e of prev) await remove('entries', e.id);
+    }
+    const note = replacesPrevious && !replaced ? 'לא מצאתי רישום קודם לתקן, אז זה נרשם כחדש.' : '';
+    finish({ text: [reply, note].filter(Boolean).join(' '), ids: saved.ids, estimated: saved.estimated, replaced });
   } catch (e) {
     const code = e instanceof VisionError ? e.code : 'local';
     console.warn('chat logging failed', code, e?.message || e);
     const text = CHAT_ERROR_TEXT[code] || CHAT_ERROR_TEXT.api;
     // part of the message was already saved when storage failed: show it, with its undo
-    if (saved?.ids.length) finish({ text: CHAT_ERROR_TEXT.partial, ids: saved.ids, estimated: saved.estimated });
+    if (saved?.ids.length) finish({ text: CHAT_ERROR_TEXT.partial, ids: saved.ids, estimated: saved.estimated, replaced });
     else finish({ error: true, text, settings: code === 'no_key' || code === 'auth' });
   }
 }
 
+// Flags change before any wait, so a correction being saved meanwhile sees them (and vice versa).
 async function undoChat(id) {
   const m = chat.msgs.find((x) => x.id === id);
-  if (!m?.ids || m.undone) return;
+  if (!m?.ids || m.undone || m.replacedBy) return;
+  m.undone = true;
+  // undoing a correction brings back what it replaced
+  const old = m.replaced && chat.msgs.find((x) => x.id === m.replaced.id);
+  if (old?.replacedBy === m.id) old.replacedBy = null;
+  else if (old) return void (m.undone = false);
   const prev = (await db.log.bulkGet(m.ids)).filter(Boolean);
   for (const e of prev) await remove('entries', e.id);
-  m.undone = true;
+  if (old) for (const e of m.replaced.entries) await put('entries', e);
   await renderChat();
+  if (state.view === 'today') renderToday();
   toast('בוטל', async () => {
-    for (const e of prev) await put('entries', e);
+    if (!m.undone) return;
+    // the restored message was corrected again, or undone, meanwhile: redoing this one would duplicate
+    if (old && (old.replacedBy || old.undone)) return;
     m.undone = false;
+    if (old) old.replacedBy = m.id;
+    for (const e of prev) await put('entries', e);
+    if (old) {
+      // what is in the diary now, so an edit made meanwhile comes back with the next undo
+      const now = (await db.log.bulkGet(m.replaced.entries.map((e) => e.id))).filter(Boolean);
+      for (const e of now) await remove('entries', e.id);
+      m.replaced.entries = now;
+    }
     renderChat();
+    if (state.view === 'today') renderToday();
   });
 }
 

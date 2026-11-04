@@ -140,7 +140,7 @@ test('alternative terms: a hit must relate to what was seen; tiny units are not 
 });
 
 // ---------- chat ----------
-import { buildTextRequest, parseTextResponse, analyzeText, TEXT_RESPONSE_SCHEMA } from '../../lib/vision.js';
+import { buildTextRequest, parseTextResponse, analyzeText, TEXT_RESPONSE_SCHEMA, historyText } from '../../lib/vision.js';
 
 const textReply = (items, reply = '') => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ items, reply }) }] });
 
@@ -175,7 +175,7 @@ test('text parse: meal and day offset are validated; reply is kept', () => {
 });
 
 test('text parse: not about food gives no items and the reply; refusal and junk raise', () => {
-  assert.deepEqual(parseTextResponse(textReply([], 'מה אכלת?')), { items: [], reply: 'מה אכלת?' });
+  assert.deepEqual(parseTextResponse(textReply([], 'מה אכלת?')), { items: [], reply: 'מה אכלת?', replacesPrevious: false });
   assert.throws(() => parseTextResponse({ stop_reason: 'refusal', content: [] }), (e) => e.code === 'refusal');
   assert.throws(() => parseTextResponse({ content: [{ type: 'text', text: '{' }] }), (e) => e.code === 'bad_output');
 });
@@ -189,4 +189,23 @@ test('analyzeText: sends the key, maps HTTP errors like photos', async () => {
   await assert.rejects(analyzeText({ apiKey: '', text: 'x' }), (e) => e.code === 'no_key');
   const bad = async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'invalid x-api-key' } }) });
   await assert.rejects(analyzeText({ apiKey: 'k', text: 'x', fetchImpl: bad }), (e) => e.code === 'auth');
+});
+
+test('text request: earlier messages and what they logged come before the new one; corrections are parsed', () => {
+  const history = [
+    { text: 'שניצל 150 גרם בערב', status: 'logged', correctable: true, logged: [{ name: 'שניצל עוף ותירס, מאמא עוף', grams: 150, where: 'ערב' }] },
+    { text: 'מה נשמע', status: 'none', logged: null },
+    { text: 'קפה', status: 'undone', logged: null },
+  ];
+  const r = buildTextRequest('לא מאמא עוף, שניצל ביתי', { now: new Date(2026, 10, 4, 20, 0), history });
+  const c = r.messages[0].content;
+  assert.match(c, /1\. "שניצל 150 גרם בערב" — נרשם \(אפשר לתקן\): שניצל עוף ותירס, מאמא עוף 150 גרם \(ערב\)/);
+  assert.match(c, /2\. "מה נשמע" — לא נרשם דבר/);
+  assert.match(c, /3\. "קפה" — בוטל/);
+  assert.match(c, /ההודעה החדשה:\nלא מאמא עוף, שניצל ביתי$/);
+  assert.ok(TEXT_RESPONSE_SCHEMA.required.includes('replaces_previous'));
+  assert.equal(historyText([]), '');
+  assert.equal(historyText(Array.from({ length: 9 }, (_, i) => ({ text: `m${i}` }))).match(/^\d\./gm).length, 4);
+  const body = { content: [{ type: 'text', text: JSON.stringify({ items: [{ ...item, meal: 'dinner', day_offset: 0 }], reply: '', replaces_previous: true }) }] };
+  assert.equal(parseTextResponse(body).replacesPrevious, true);
 });
