@@ -277,3 +277,15 @@ test('canned food: "משימורים" / "שימורים" / "מקופסה" are se
   assert.match(first('טונה מקופסה'), /טונה, משומר/);
   assert.match(first('חומוס משימורים'), /משומרים/);
 });
+
+test('the canned rewrite keeps foods named with the word itself first ("חמין שימורים")', () => {
+  assert.match(matchFood('חמין שימורים', index, { limit: 1 })[0].n, /^חמין שימורים/);
+  assert.match(matchFood('עלי גפן משימורים', index, { limit: 1 })[0].n, /משומרים/);
+});
+
+test('cola means regular cola; zero or diet means the sugar-free one', () => {
+  const first = (q) => matchFood(q, index, { limit: 1 })[0].n;
+  assert.match(first('קולה'), /^משקה קל, קולה, כולל/);
+  assert.match(first('קוקה קולה'), /^משקה קל, קולה, כולל/);
+  assert.match(first('קולה זירו'), /ללא סוכר, דיאט/);
+});

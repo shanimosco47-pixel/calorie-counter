@@ -285,3 +285,27 @@ test('pickFood with a named product: another food replaces Claude\'s estimate of
   const body = { content: [{ type: 'text', text: JSON.stringify({ items: [{ ...item, meal: '', day_offset: 0, product: ' השקדיה ' }], reply: '', replaces_previous: false }) }] };
   assert.equal(parseTextResponse(body).items[0].product, 'השקדיה');
 });
+
+test('dbHint round 2: never against a correctly chosen dry food; only the same food (first word, second near it)', () => {
+  const dry = { id: 'd', n: 'שיבולת שועל, קוואקר, רגיל ואינסטנט, לא מבושל', kcal: 379 };
+  const cooked = { id: 'c', n: 'שיבולת שועל, מבושל, אינסטנט, ללא תוספת שומן בבישול', kcal: 87 };
+  assert.equal(dbHint({ name: 'שיבולת שועל', query: 'שיבולת שועל', kcal: 380 }, dry, [cooked, dry]), null);
+  assert.equal(dbHint({ name: 'חלב סויה', query: 'חלב סויה', kcal: 40 }, { id: 'a', n: 'חלב סויה', kcal: 40, src: 'ai' },
+    [{ id: 'o', n: 'ביצה או חביתה עם חלב בשמן סויה', kcal: 218 }]), null);
+  assert.equal(dbHint({ name: 'תפוח אדמה אפוי', query: 'תפוח אדמה אפוי', kcal: 119 }, { id: 'p', n: 'תפוח אדמה אפוי', kcal: 119 },
+    [{ id: 's', n: 'סמבוסק במילוי תפוחי אדמה ופטריות, אפוי', kcal: 240 }]), null);
+});
+
+test('a named product matches its database name without the article ("השקדיה" is "שקדיה")', () => {
+  const it = { name: 'שקדים מעושנים', query: 'שקדים מעושנים', kcal: 650, grams: 30, p: 0, c: 0, f: 0, unit: null, product: 'השקדיה' };
+  assert.equal(pickFood(it, [{ id: 's', n: 'שקדים מעושנים, גת, שקדיה', kcal: 586 }]).food.id, 's');
+  assert.match(buildTextRequest('x').system, /without the article \("שקדיה"/);
+});
+
+test('a low-calorie food is not matched to one many times its calories (black coffee is not sweet Turkish coffee)', () => {
+  const it = { name: 'קפה שחור', query: 'קפה שחור', kcal: 2, grams: 240, p: 0, c: 0, f: 0, unit: null };
+  const sweet = { id: 's', n: 'קפה, מוכן טורקי/שחור ממותק', kcal: 38 };
+  const plain = { id: 'p', n: 'קפה, מוכן אספרסו, לא ממותק', kcal: 9 };
+  assert.equal(pickFood(it, [sweet, plain]).food.id, 'p');
+  assert.equal(pickFood(it, [sweet]).estimated, true);
+});
