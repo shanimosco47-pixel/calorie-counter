@@ -429,3 +429,30 @@ test('chat: declining a correction that asked brings back the question it replac
   await expect(page.getByTestId('chat-ask')).toContainText('מאפה פלאפלוני');
   expect(await entries(page)).toEqual([]);
 });
+
+test('chat: a "כן" typed while another message is logging answers the question it was typed under, not a newer one', async ({ page }) => {
+  const doubtful = (name, kcal) => answer([item({ name, query: name, grams: 80, kcal_per_100g: kcal })]);
+  let n = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  await page.route('https://api.anthropic.com/**', async (route) => {
+    n += 1;
+    if (n === 2) await gate;   // the second message is still logging while "כן" is typed
+    return route.fulfill({ json: n === 1 ? doubtful('מאפה פלאפלוני', 333) : doubtful('עוגיית פלאפלון', 450) });
+  });
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('עוגיית פלאפלון');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-pending')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('כן');
+  await page.getByTestId('chat-send').click();
+  release();
+  // the first question is saved; the second one still waits for its own answer
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await expect(page.getByTestId('chat-ask')).toContainText('עוגיית פלאפלון');
+  expect((await entries(page)).map((e) => e.name)).toEqual(['מאפה פלאפלוני']);
+});

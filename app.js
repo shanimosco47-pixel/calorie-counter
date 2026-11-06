@@ -958,10 +958,13 @@ async function renderChat() {
 const CHAT_YES = /^(כן|כן כן|נכון|בדיוק|תרשום|רשום|תרשמי|לרשום|אישור|מאשר|מאשרת|בסדר|סבבה|אוקיי|אוקי|ok|okay|yes|👍)[.!]*$/i;
 const CHAT_NO = /^(לא|ממש לא|אל תרשום|אל תרשמי|לא לרשום|ביטול|תבטל|תבטלי|no)[.!]*$/i;
 
-// The question waiting right before `pending`, if the latest reply before it is one.
-function waitingAsk(pending) {
-  const last = chat.msgs.slice(0, chat.msgs.indexOf(pending)).reverse().find((m) => !m.me && !m.pending);
-  return last?.ask && !last.replacedBy && !last.dropped && !last.saving ? last : null;
+const askWaits = (m) => !!m?.ask && !m.replacedBy && !m.dropped && !m.saving;
+
+// The question on screen when a message is sent: the latest reply shown (not a message still being
+// logged), when it is a waiting question. A question that appears later was not seen yet.
+function shownAsk() {
+  const last = [...chat.msgs].reverse().find((m) => !m.me && !m.pending);
+  return askWaits(last) ? last : null;
 }
 
 function sendChat(text) {
@@ -970,8 +973,9 @@ function sendChat(text) {
   stopListening();
   $('#chat-input').value = '';
   fitChatInput();
+  const answerTo = shownAsk()?.id ?? null;   // a yes or no answers only the question it was typed under
   chat.msgs.push({ id: ++chat.seq, me: true, text });
-  const pending = { id: ++chat.seq, pending: true };
+  const pending = { id: ++chat.seq, pending: true, answerTo };
   chat.msgs.push(pending);
   chat.busy++;
   renderChat();
@@ -1092,10 +1096,10 @@ async function logChat(text, pending) {
     renderChat();
     if (state.view === 'today') renderToday();
   };
-  // a short yes or no answering the question that waits (checked in the queue's order, so also when it
-  // was typed while an earlier message was still being logged): the answer shows below the question,
-  // which turns into the outcome; the history Claude sees pairs each message with the reply after it
-  const ask = waitingAsk(pending);
+  // a short yes or no answering the question it was typed under, if that one still waits: the answer
+  // shows below the question, which turns into the outcome; the history Claude sees pairs each message
+  // with the reply after it. Otherwise the text goes to Claude like any other message.
+  const ask = pending.answerTo ? chat.msgs.find((m) => m.id === pending.answerTo && askWaits(m)) : null;
   const answer = ask && (CHAT_YES.test(text) ? 'yes' : CHAT_NO.test(text) ? 'no' : '');
   if (answer) {
     chat.msgs.splice(chat.msgs.indexOf(pending), 1);
@@ -1184,7 +1188,12 @@ async function saveAsk(m) {
   }
   const target = t && t.ids?.length && !t.undone && !t.replacedBy ? t : null;
   const result = await commitChat(m.id, items, new Date(now), target, m.text, missed || (!!targetId && !target));
-  // (a question that itself replaced an earlier question keeps that link, so undo brings it back)
+  // (a question that itself replaced an earlier question keeps that link, so undo brings it back; when
+  // nothing was saved, the earlier question is back as it was)
+  if (!result.ids?.length && m.replacedAsk) {
+    const asked = chat.msgs.find((x) => x.id === m.replacedAsk);
+    if (asked?.replacedBy === m.id) asked.replacedBy = null;
+  }
   const at = chat.msgs.indexOf(m);
   if (at >= 0) chat.msgs.splice(at, 1, { id: m.id, ...result, ...(m.replacedAsk && result.ids?.length ? { replacedAsk: m.replacedAsk } : {}) });
   renderChat();
