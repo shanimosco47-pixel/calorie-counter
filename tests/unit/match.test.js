@@ -218,3 +218,14 @@ test('the index reuses prepared database foods between rebuilds', () => {
   const b = buildIndex(data.foods.slice(0, 50));
   assert.equal(a[0], b[0]);
 });
+
+test('dry ingredients: "יבשה" / "לא מבושלת" find the uncooked food; baby food is never an adult pick', () => {
+  const first = (q) => matchFood(q, index, { limit: 1 })[0].n;
+  assert.match(first('שיבולת שועל יבשה'), /^שיבולת שועל.*לא מבושל/);
+  assert.match(first('שיבולת שועל לא מבושלת'), /^שיבולת שועל.*לא מבושל/);
+  assert.match(first('שיבולת שועל'), /מבושל/);   // without "dry", cooked first as before
+  assert.ok(!/לא מבושל/.test(first('שיבולת שועל')));
+  assert.equal(brandOf('דייסת תינוקות, שיבולת שועל/דגנים מעורבים, אבקה, B&D מועשרת'), normalize('B&D'));
+  assert.equal(foodPreference({ n: 'דייסת תינוקות, שיבולת שועל, B&D מועשרת' }, 'דייסת שיבולת שועל'), 3);
+  assert.equal(foodPreference({ n: 'דייסת תינוקות, שיבולת שועל, B&D מועשרת' }, 'דייסה לתינוק'), 2);
+});
