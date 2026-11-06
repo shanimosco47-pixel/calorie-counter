@@ -257,3 +257,31 @@ test('both prompts read foods as eaten in Israel: dishes not raw ingredients, na
   }
   assert.match(buildTextRequest('x').system, /say in a few words what you assumed/);
 });
+
+import { dbHint, TEXT_RESPONSE_SCHEMA as TRS } from '../../lib/vision.js';
+
+test('dbHint: a chosen food far from the search\'s own first related hit is flagged; brands, powders and the same food are not', () => {
+  const it = { name: 'עלי גפן משימורים', query: 'עלי גפן משומרים', kcal: 72 };
+  const canned = { id: 'w', n: 'עלי גפן ממולאים באורז, משומרים, וילי פוד', kcal: 169 };
+  const fresh = { id: 'f', n: 'עלי גפן, טריים', kcal: 93 };
+  assert.deepEqual(dbHint(it, fresh, [canned], [fresh]), { n: canned.n, kcal: 169 });
+  assert.deepEqual(dbHint(it, { id: 'a', n: it.name, kcal: 72, src: 'ai' }, [canned]), { n: canned.n, kcal: 169 });
+  assert.equal(dbHint(it, canned, [canned]), null);                         // the chosen food itself
+  assert.equal(dbHint(it, fresh, [canned], [], () => 2), null);              // a branded product
+  assert.equal(dbHint({ name: 'קפה קר', query: 'קפה קר', kcal: 80 }, { id: 'c', n: 'קפה קר מוכן', kcal: 80 },
+    [{ id: 'p', n: 'קפה, אבקה להכנת משקה קר', kcal: 357 }]), null);          // a powder is another state
+  assert.equal(dbHint({ name: 'שוקו', query: 'שוקו בלי סוכר', kcal: 40 }, { id: 's', n: 'שוקו ממכונה', kcal: 32 },
+    [{ id: 'x', n: 'שוקולד חלב ללא סוכר', kcal: 472 }]), null);              // שוקולד is not שוקו
+  assert.equal(dbHint({ name: 'עלי גפן', query: 'עלי גפן', kcal: 150 }, { id: 'g', n: 'עלי גפן ממולאים', kcal: 135 }, [canned]), null);   // close enough
+});
+
+test('pickFood with a named product: another food replaces Claude\'s estimate of it only at almost the same calories', () => {
+  const it = { name: 'עלי גפן ממולאים (השקדיה)', query: 'עלי גפן ממולאים אורז', kcal: 170, grams: 125, p: 0, c: 0, f: 0, unit: null, product: 'השקדיה' };
+  const homemade = { id: 'h', n: 'עלי גפן ממולאים אורז עם שמן סויה', kcal: 135 };
+  assert.equal(pickFood(it, [homemade]).estimated, true);                    // 20% off: the product's own estimate
+  assert.equal(pickFood(it, [{ ...homemade, kcal: 165 }]).food.id, 'h');      // 3% off: the database food
+  assert.equal(pickFood({ ...it, product: '' }, [homemade]).food.id, 'h');   // nothing named: as before
+  assert.ok(TRS.properties.items.items.required.includes('product'));
+  const body = { content: [{ type: 'text', text: JSON.stringify({ items: [{ ...item, meal: '', day_offset: 0, product: ' השקדיה ' }], reply: '', replaces_previous: false }) }] };
+  assert.equal(parseTextResponse(body).items[0].product, 'השקדיה');
+});

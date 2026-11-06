@@ -289,3 +289,15 @@ test('chat: "without oil" holds for every search term; grilled breast is not a b
   expect(chicken.name).toMatch(/חזה/);
   expect(chicken.name).not.toMatch(/מאמא עוף|עוף טוב|עוף העמק/);
 });
+
+test('chat: a food far from the database\'s own reading shows that reading beside it', async ({ page }) => {
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: answer([
+    item({ name: 'עלי גפן משימורים', query: 'עלי גפן משומרים', alt_queries: ['עלי גפן'], grams: 25,
+      unit_name: 'עלה', unit_count: 5, unit_grams: 5, kcal_per_100g: 72, meal: 'dinner' }),
+  ]) }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('5 עלי גפן משימורים');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  await expect(page.getByTestId('chat-item')).toContainText('במאגר: עלי גפן ממולאים באורז, משומרים');
+});

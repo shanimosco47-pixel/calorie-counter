@@ -7,7 +7,7 @@ import {
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
-import { analyzePhoto, analyzeText, pickFood, amountFor, VisionError, ERROR_TEXT, CHAT_ERROR_TEXT, NO_RETRY } from './lib/vision.js';
+import { analyzePhoto, analyzeText, pickFood, amountFor, dbHint, VisionError, ERROR_TEXT, CHAT_ERROR_TEXT, NO_RETRY } from './lib/vision.js';
 import { BUILD } from './build-info.js';
 import { createUpdater } from './lib/update.js';
 
@@ -760,9 +760,12 @@ function resolveItems(recognized) {
     const { food, estimated } = pickFood(it, candidates, {
       alternatives, rank: (f) => foodPreference(f, said), makeId: () => 'a' + Date.now().toString(36) + i,
     });
-    const note = estimated ? `זוהה: ${it.name} · ערכים משוערים (${fmt(food.kcal)} קק״ל ל-100 ג׳), לא נמצא במאגר`
-      : (it.name !== food.n ? `זוהה: ${it.name}` : '');
-    return { food, ...amountFor(it, food, unitLabel), note, query: it.name, estimated, meal: it.meal, dayOffset: it.dayOffset };
+    // an estimate far from the database's own reading of the same food is shown beside it
+    const near = dbHint(it, food, candidates, alternatives, (f) => foodPreference(f, said));
+    const hint = near ? `במאגר: ${near.n} (${fmt(near.kcal)} קק״ל ל-100 ג׳)` : '';
+    const note = [estimated ? `זוהה: ${it.name} · ערכים משוערים (${fmt(food.kcal)} קק״ל ל-100 ג׳), לא נמצא במאגר`
+      : (it.name !== food.n ? `זוהה: ${it.name}` : ''), hint].filter(Boolean).join(' · ');
+    return { food, ...amountFor(it, food, unitLabel), note, hint, query: it.name, estimated, meal: it.meal, dayOffset: it.dayOffset };
   });
 }
 
@@ -830,7 +833,7 @@ const chat = { msgs: [], seq: 0, busy: 0, queue: Promise.resolve(), rec: null, l
 // Claude's own estimate, and the error that stopped saving partway, if any (what was saved stays saved).
 async function saveItemsDirect(items, now = new Date()) {
   const today = isoDate(now);
-  const out = { ids: [], estimated: [], error: null };
+  const out = { ids: [], estimated: [], hints: {}, error: null };
   try {
     for (const [i, r] of items.entries()) {
       const grams = gramsFor(r.food, r.amount, r.unit);
@@ -845,6 +848,7 @@ async function saveItemsDirect(items, now = new Date()) {
       const { id } = await put('entries', entry);
       out.ids.push(id);
       if (r.estimated) out.estimated.push(id);
+      if (r.hint) out.hints[id] = r.hint;
     }
   } catch (e) { out.error = e; }
   await refreshMyFoods().catch(() => {});
@@ -883,9 +887,13 @@ async function renderChat() {
     const total = rows.reduce((s, e) => s + (Number(e.kcal) || 0), 0);
     const items = rows.map((e) => {
       const where = [MEALS.find((x) => x.id === e.meal)?.label, dayWord(e.date)].filter(Boolean).join(' · ');
-      // an estimate shows its calories per 100 g, so an implausible one is easy to spot
-      const per100 = e.grams > 0 ? Math.round((Number(e.kcal) || 0) / e.grams * 100) : 0;
-      const est = m.estimated?.includes(e.id) ? ` · ערכים משוערים (${fmt(per100)} קק״ל ל-100 ג׳)` : '';
+      // an estimate shows its calories per 100 g (and the database's reading when far from it), so an
+      // implausible one is easy to spot
+      // (the food's own value: the entry's kcal is rounded, which skews small amounts)
+      const per100 = Math.round(Number(state.byId.get(e.foodId)?.kcal)
+        || (e.grams > 0 ? (Number(e.kcal) || 0) / e.grams * 100 : 0));
+      const est = (m.estimated?.includes(e.id) ? ` · ערכים משוערים${per100 > 0 ? ` (${fmt(per100)} קק״ל ל-100 ג׳)` : ''}` : '')
+        + (m.hints?.[e.id] ? ` · ${m.hints[e.id]}` : '');
       return `<li data-testid="chat-item"><span class="grow"><span class="name">${esc(e.name)}</span>
         <span class="sub">${esc(amountText(e))} · ${esc(where)}${est}</span></span>
         <span class="kcal">${fmt(e.kcal)} קק״ל</span>
@@ -1005,13 +1013,13 @@ async function logChat(text, pending) {
       for (const e of prev) await remove('entries', e.id);
     }
     const note = replacesPrevious && !replaced ? 'לא מצאתי רישום קודם לתקן, אז זה נרשם כחדש.' : '';
-    finish({ text: [reply, note].filter(Boolean).join(' '), ids: saved.ids, estimated: saved.estimated, replaced });
+    finish({ text: [reply, note].filter(Boolean).join(' '), ids: saved.ids, estimated: saved.estimated, hints: saved.hints, replaced });
   } catch (e) {
     const code = e instanceof VisionError ? e.code : 'local';
     console.warn('chat logging failed', code, e?.message || e);
     const text = CHAT_ERROR_TEXT[code] || CHAT_ERROR_TEXT.api;
     // part of the message was already saved when storage failed: show it, with its undo
-    if (saved?.ids.length) finish({ text: CHAT_ERROR_TEXT.partial, ids: saved.ids, estimated: saved.estimated, replaced });
+    if (saved?.ids.length) finish({ text: CHAT_ERROR_TEXT.partial, ids: saved.ids, estimated: saved.estimated, hints: saved.hints, replaced });
     else finish({ error: true, text, settings: code === 'no_key' || code === 'auth' });
   }
 }

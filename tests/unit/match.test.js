@@ -269,3 +269,11 @@ test('a query that is only a homemade word is searched as typed', () => {
   assert.ok(matchFood('של אמא', index, { limit: 3 }).length > 0);
   assert.ok(matchFood('ביתי', index, { limit: 3 }).map((f) => f.n).includes('סלט חומוס, ביתי'));
 });
+
+test('canned food: "משימורים" / "שימורים" / "מקופסה" are searched as the database\'s "משומר"', () => {
+  const first = (q) => matchFood(q, index, { limit: 1 })[0]?.n || '';
+  assert.match(first('עלי גפן משימורים'), /עלי גפן ממולאים באורז, משומרים/);
+  assert.match(first('עלי גפן שימורים'), /משומרים/);
+  assert.match(first('טונה מקופסה'), /טונה, משומר/);
+  assert.match(first('חומוס משימורים'), /משומרים/);
+});
