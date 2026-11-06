@@ -229,3 +229,22 @@ test('dry ingredients: "יבשה" / "לא מבושלת" find the uncooked food; 
   assert.equal(foodPreference({ n: 'דייסת תינוקות, שיבולת שועל, B&D מועשרת' }, 'דייסת שיבולת שועל'), 3);
   assert.equal(foodPreference({ n: 'דייסת תינוקות, שיבולת שועל, B&D מועשרת' }, 'דייסה לתינוק'), 2);
 });
+
+test('"יבש" means uncooked only for foods the database has uncooked; otherwise dried (fruit) or dry (wine)', () => {
+  const first = (q) => matchFood(q, index, { limit: 1 })[0].n;
+  assert.match(first('תאנים יבשות'), /^תאנה, מיובשת/);
+  assert.match(first('שזיפים יבשים'), /^שזיף, מיובש/);
+  assert.match(first('משמש יבש'), /^משמש, מיובש/);
+  assert.match(first('יין לבן יבש'), /יין לבן/);
+  assert.match(first('יין יבש'), /יין/);
+  assert.match(first('אורז יבש'), /לא מבושל/);
+  assert.match(first('פסטה יבשה'), /לא מבושל/);
+});
+
+test('the brand-plus-description rule is only for brands that are not food words (dill is not a brand)', () => {
+  assert.equal(brandOf('סלט מלפפונים עם בצל, שמיר ושמן סויה'), '');
+  assert.equal(brandOf('מרק, מוכן מאבקת מרק עוף עם גזר, שמיר ופטרוזיליה'), '');
+  assert.ok(brandOf('דייסת תינוקות, שיבולת שועל/דגנים מעורבים, אבקה, B&D מועשרת'));
+  assert.match(matchFood('סלט מלפפונים ביתי', index, { limit: 8 }).map((f) => f.n).join('|'), /שמיר/);
+  assert.equal(foodPreference({ n: 'תמ"ל, נוטרילון, שלב 1, מוכן לשתייה' }, 'חלב'), 3);
+});
