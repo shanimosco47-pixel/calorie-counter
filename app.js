@@ -746,7 +746,10 @@ function forgetPhoto() {
 function resolveItems(recognized) {
   return recognized.map((it, i) => {
     // the primary search term, then each alternative term Claude gave (8 results each, no duplicates)
-    const search = (q) => matchFood(q, state.index, { limit: 8, boostIds: state.favIds });
+    // Claude names generic foods, so a branded product is chosen only when nothing generic fits; what
+    // the person said the food is without ("אורז בלי שמן") holds for every search term
+    const without = [...`${it.name} ${it.queries[0] || ''}`.matchAll(/(?:ללא|בלי)(?: תוספת)? (\S+)/g)].map((m) => `ללא ${m[1]}`).join(' ');
+    const search = (q) => matchFood(`${q} ${without}`, state.index, { limit: 8, boostIds: state.favIds, preferGeneric: true });
     const candidates = search(it.queries[0] || it.name);
     const seen = new Set(candidates.map((f) => f.id));
     const alternatives = it.queries.slice(1)

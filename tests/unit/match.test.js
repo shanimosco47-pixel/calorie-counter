@@ -148,3 +148,31 @@ test('"homemade" never lands on a factory product, and the word itself is not re
   assert.match(matchFood('לחם ביתי', index, { limit: 1 })[0].n, /^לחם ביתי/);   // not the sliced-loaf staple
   assert.ok(matchFood('ביתי', index, { limit: 3 }).length > 0);   // the word alone is searched as typed
 });
+
+test('"ללא שמן" / "בלי שמן": foods cooked with oil are left out; the no-fat version comes first', () => {
+  for (const q of ['אורז לבן מבושל ללא שמן', 'אורז בלי שמן', 'אורז לבן ללא שמן']) {
+    const top = matchFood(q, index, { limit: 5 }).map((f) => f.n);
+    assert.ok(top.length, q);
+    assert.match(top[0], /ללא תוספת שומן/, `${q}: ${top.join(' | ')}`);
+    assert.ok(top.every((n) => !/עם שמן/.test(n)), `${q}: ${top.join(' | ')}`);
+  }
+  assert.match(matchFood('סלט ירקות ללא שמן', index, { limit: 1 })[0].n, /ללא תוספת שמן/);
+  assert.match(matchFood('אורז לבן מבושל', index, { limit: 1 })[0].n, /ללא תוספת שומן/);   // plain cooked rice
+});
+
+test('chicken eaten with the skin only when the skin is mentioned', () => {
+  assert.match(matchFood('חזה עוף צלוי', index, { limit: 1 })[0].n, /נאכל ללא עור/);
+});
+
+test('a synonym never drops a typed word: grilled breast is breast, not thigh', () => {
+  const top = matchFood('חזה עוף בגריל', index, { limit: 8 }).map((f) => f.n);
+  assert.ok(top.every((n) => /חזה/.test(n)), top.join(' | '));
+});
+
+test('preferGeneric (chat and photos): a branded product only when the brand is named', () => {
+  const first = (q) => matchFood(q, index, { limit: 1, preferGeneric: true })[0].n;
+  assert.ok(!brandOf(first('חזה עוף בגריל')), first('חזה עוף בגריל'));
+  assert.match(first('חזה עוף בגריל מאמא עוף'), /מאמא עוף/);
+  // manual search is unchanged
+  assert.match(matchFood('קוטג׳', index, { limit: 1 })[0].n, /^גבינת קוטג/);
+});
