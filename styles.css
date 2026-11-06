@@ -252,6 +252,7 @@ body[data-view="chat"] .toast { bottom: calc(var(--nav-h) + env(safe-area-inset-
 .bubble .list .grow, .bubble .list .name { white-space: normal; }
 .bubble .total { font-weight: 600; margin-top: 6px; }
 .bubble .undone { color: var(--muted); text-decoration: line-through; }
+.bubble .sub.doubt { display: block; color: var(--warn); white-space: normal; }
 .bubble .actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .bubble .actions .btn { min-height: 36px; padding: 4px 14px; }
 .link-btn { border: 0; background: none; color: var(--brand); font-weight: 600; cursor: pointer; min-height: 36px; padding: 0 4px; }

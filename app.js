@@ -7,7 +7,7 @@ import {
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
 } from './lib/calc.js';
 import { lookupBarcode } from './lib/off.js';
-import { analyzePhoto, analyzeText, pickFood, amountFor, VisionError, ERROR_TEXT, CHAT_ERROR_TEXT, NO_RETRY } from './lib/vision.js';
+import { analyzePhoto, analyzeText, pickFood, amountFor, dbHint, VisionError, ERROR_TEXT, CHAT_ERROR_TEXT, NO_RETRY } from './lib/vision.js';
 import { BUILD } from './build-info.js';
 import { createUpdater } from './lib/update.js';
 
@@ -153,7 +153,8 @@ const updater = createUpdater({
     // a key typed or pasted but not saved yet, even after tapping "show" or leaving to compare it
     || ($('#api-key') && $('#api-key').value.trim() !== savedApiKey)
     // the chat lives in memory: a reload would drop its replies and their undo / edit buttons
-    || (state.view === 'chat' && (chat.msgs.some((m) => m.ids && !m.undone) || $('#chat-input').value.trim() !== '')),
+    || (state.view === 'chat' && (chat.msgs.some((m) => (m.ids && !m.undone) || (m.ask && !m.dropped && !m.replacedBy))
+      || $('#chat-input').value.trim() !== '')),
   // the camera or picker is open over the app, a paid recognition is running, or its items await approval
   // (or a chat message is being logged)
   keepAlive: () => photo.picking || !!photo.ctrl || photo.confirming || !!photo.stream || chat.busy > 0,
@@ -760,9 +761,12 @@ function resolveItems(recognized) {
     const { food, estimated } = pickFood(it, candidates, {
       alternatives, rank: (f) => foodPreference(f, said), makeId: () => 'a' + Date.now().toString(36) + i,
     });
-    const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
-      : (it.name !== food.n ? `זוהה: ${it.name}` : '');
-    return { food, ...amountFor(it, food, unitLabel), note, query: it.name, estimated, meal: it.meal, dayOffset: it.dayOffset };
+    // an estimate far from the database's own reading of the same food is shown beside it
+    const near = dbHint(it, food, candidates, alternatives, (f) => foodPreference(f, said));
+    const hint = near ? `במאגר: ${near.n} (${fmt(near.kcal)} קק״ל ל-100 ג׳)` : '';
+    const note = [estimated ? `זוהה: ${it.name} · ערכים משוערים (${fmt(food.kcal)} קק״ל ל-100 ג׳), לא נמצא במאגר`
+      : (it.name !== food.n ? `זוהה: ${it.name}` : ''), hint].filter(Boolean).join(' · ');
+    return { food, ...amountFor(it, food, unitLabel), note, hint, query: it.name, estimated, unsure: !!it.unsure, meal: it.meal, dayOffset: it.dayOffset };
   });
 }
 
@@ -821,7 +825,9 @@ function closePhoto() {
 
 // The owner's choice: the chat logs straight to the diary (no confirm sheet); every reply shows what was
 // saved, with undo and edit. Messages live in memory only: never stored, never synced.
-// msgs: { id, me?, text?, ids?, undone?, error?, pending?, settings?, replaced?, replacedBy? }
+// msgs: { id, me?, text?, ids?, undone?, error?, pending?, settings?, replaced?, replacedBy?, ask?, dropped?, saving? }
+// ask: { items, doubts, now, targetId, missed }: items not saved yet because something about them is doubtful;
+// the person saves them (data-chat-confirm), declines (data-chat-drop) or writes a correction.
 // A correction ("לא שניצל מאמא עוף, שניצל ביתי") replaces what the latest reply logged: that reply gets
 // replacedBy (the correction's id) and the correction keeps replaced { id, entries } so undo restores them.
 const chat = { msgs: [], seq: 0, busy: 0, queue: Promise.resolve(), rec: null, listening: false, renderGen: 0, scrolledFor: '' };
@@ -830,7 +836,7 @@ const chat = { msgs: [], seq: 0, busy: 0, queue: Promise.resolve(), rec: null, l
 // Claude's own estimate, and the error that stopped saving partway, if any (what was saved stays saved).
 async function saveItemsDirect(items, now = new Date()) {
   const today = isoDate(now);
-  const out = { ids: [], estimated: [], error: null };
+  const out = { ids: [], estimated: [], hints: {}, error: null };
   try {
     for (const [i, r] of items.entries()) {
       const grams = gramsFor(r.food, r.amount, r.unit);
@@ -845,6 +851,7 @@ async function saveItemsDirect(items, now = new Date()) {
       const { id } = await put('entries', entry);
       out.ids.push(id);
       if (r.estimated) out.estimated.push(id);
+      if (r.hint) out.hints[id] = r.hint;
     }
   } catch (e) { out.error = e; }
   await refreshMyFoods().catch(() => {});
@@ -872,6 +879,33 @@ async function renderChat() {
       return `<div class="bubble bot error" data-testid="chat-error">${esc(m.text)}${m.settings
         ? `<div class="actions"><button type="button" class="btn secondary" data-chat-settings data-testid="chat-settings">להגדרות</button></div>` : ''}</div>`;
     }
+    if (m.ask) {
+      if (m.replacedBy) return `<div class="bubble bot" data-testid="chat-reply"><span class="undone">הוחלף בתיקון שלמטה</span></div>`;
+      if (m.dropped) return `<div class="bubble bot" data-testid="chat-reply"><span class="undone">לא נרשם ליומן</span>${m.saving === false && m.text ? `<div>${esc(m.text)}</div>` : ''}</div>`;
+      let total = 0;
+      const items = m.ask.items.map((r, i) => {
+        const grams = gramsFor(r.food, r.amount, r.unit);
+        const kcal = nutrientsFor(r.food, grams).kcal;
+        total += kcal;
+        const w = askWhere(r, m.ask.now);
+        const where = [MEALS.find((x) => x.id === w.meal)?.label, dayWord(w.date)].filter(Boolean).join(' · ');
+        const amount = r.unit && r.unit !== 'g' ? `${r.amount} × ${unitLabel(r.food, r.unit)} (${fmt(grams)} ג׳)` : `${fmt(grams)} ג׳`;
+        const why = m.ask.doubts[i];
+        return `<li data-testid="chat-ask-item"><span class="grow"><span class="name">${esc(r.food.n)}</span>
+          <span class="sub">${esc(amount)} · ${esc(where)}</span>${why ? `<span class="sub doubt" data-testid="chat-doubt">⚠ ${esc(why)}</span>` : ''}</span>
+          <span class="kcal">${fmt(kcal)} קק״ל</span></li>`;
+      }).join('');
+      return `<div class="bubble bot" data-testid="chat-ask">
+        <div>${m.text ? `${esc(m.text)} ` : ''}לפני שאני רושם, כדאי לבדוק:</div>
+        <ul class="list compact">${items}</ul>
+        <div class="total">סה״כ ${fmt(total)} קק״ל</div>
+        <div class="actions">
+          <button type="button" class="btn" data-chat-confirm="${m.id}" data-testid="chat-confirm" ${m.saving ? 'disabled' : ''}>לרשום</button>
+          <button type="button" class="btn secondary" data-chat-drop="${m.id}" data-testid="chat-drop" ${m.saving ? 'disabled' : ''}>לא לרשום</button>
+        </div>
+        <div class="sub">אפשר גם לכתוב תיקון, למשל: "עלי גפן ממולאים"</div>
+      </div>`;
+    }
     const rows = (m.ids || []).map((id) => entries.get(id)).filter(Boolean);
     if (!m.ids?.length) return `<div class="bubble bot" data-testid="chat-reply">${esc(m.text)}</div>`;
     if (m.replacedBy && !m.undone) {
@@ -883,7 +917,13 @@ async function renderChat() {
     const total = rows.reduce((s, e) => s + (Number(e.kcal) || 0), 0);
     const items = rows.map((e) => {
       const where = [MEALS.find((x) => x.id === e.meal)?.label, dayWord(e.date)].filter(Boolean).join(' · ');
-      const est = m.estimated?.includes(e.id) ? ' · ערכים משוערים' : '';
+      // an estimate shows its calories per 100 g (and the database's reading when far from it), so an
+      // implausible one is easy to spot
+      // (the food's own value: the entry's kcal is rounded, which skews small amounts)
+      const per100 = Math.round(Number(state.byId.get(e.foodId)?.kcal)
+        || (e.grams > 0 ? (Number(e.kcal) || 0) / e.grams * 100 : 0));
+      const est = (m.estimated?.includes(e.id) ? ` · ערכים משוערים${per100 > 0 ? ` (${fmt(per100)} קק״ל ל-100 ג׳)` : ''}` : '')
+        + (m.hints?.[e.id] ? ` · ${m.hints[e.id]}` : '');
       return `<li data-testid="chat-item"><span class="grow"><span class="name">${esc(e.name)}</span>
         <span class="sub">${esc(amountText(e))} · ${esc(where)}${est}</span></span>
         <span class="kcal">${fmt(e.kcal)} קק״ל</span>
@@ -913,14 +953,36 @@ async function renderChat() {
 // Messages are handled one at a time, in the order sent: a second message while the first is still
 // being logged waits its turn (people send in pieces: "פיתה", then "וגם קפה"). Nothing is ever aborted,
 // so a request that was paid for is always logged and always answered.
+// A short yes or no typed (or said) in answer to the question that waits right now: answered here,
+// like its buttons, without asking Claude ("כן" must not become a second question or a second entry).
+const CHAT_YES = /^(כן|כן כן|נכון|בדיוק|תרשום|רשום|תרשמי|לרשום|אישור|מאשר|מאשרת|בסדר|סבבה|אוקיי|אוקי|ok|okay|yes|👍)[.!]*$/i;
+const CHAT_NO = /^(לא|ממש לא|אל תרשום|אל תרשמי|לא לרשום|ביטול|תבטל|תבטלי|no)[.!]*$/i;
+
+const askWaits = (m) => !!m?.ask && !m.replacedBy && !m.dropped && !m.saving;
+
+// A reply that no longer counts when looking for "the latest one": replaced by a later message, or
+// declined / undone in a way that brought back the one it had replaced (that one is current again).
+// A plain decline or undo still counts: it ends the conversation about that food.
+const stepAside = (m) => !!m.replacedBy || ((m.dropped || m.undone) && !!(m.replacedAsk || m.replaced));
+
+// The question on screen when a message is sent: the latest reply shown that has not stepped aside, when
+// it is a waiting question. So a question brought back by declining or undoing its correction counts; any
+// other reply after a question (a saved food, Claude's own question, a plain decline) means the answer is
+// to that reply, and goes to Claude. A question that appears later was not seen yet.
+function shownAsk() {
+  const last = [...chat.msgs].reverse().find((m) => !m.me && !m.pending && !stepAside(m));
+  return askWaits(last) ? last : null;
+}
+
 function sendChat(text) {
   text = String(text || '').trim();
   if (!text) return chat.queue;
   stopListening();
   $('#chat-input').value = '';
   fitChatInput();
+  const answerTo = shownAsk()?.id ?? null;   // a yes or no answers only the question it was typed under
   chat.msgs.push({ id: ++chat.seq, me: true, text });
-  const pending = { id: ++chat.seq, pending: true };
+  const pending = { id: ++chat.seq, pending: true, answerTo };
   chat.msgs.push(pending);
   chat.busy++;
   renderChat();
@@ -943,6 +1005,21 @@ async function chatContext(pending) {
     if (!m.me) continue;
     const reply = before[i + 1];
     if (!reply || reply.me || reply.pending) continue;
+    if (reply.ask) {
+      // waiting for the person: listed like logged items, and the latest one can be corrected
+      const status = reply.replacedBy ? 'replaced' : reply.dropped ? 'dropped' : 'pending';
+      history.push({
+        text: m.text,
+        status,
+        logged: status === 'pending' ? reply.ask.items.map((r) => {
+          const w = askWhere(r, reply.ask.now);
+          return { name: r.food.n, grams: gramsFor(r.food, r.amount, r.unit), where: [MEALS.find((x) => x.id === w.meal)?.label, dayWord(w.date)].filter(Boolean).join(' ') };
+        }) : null,
+      });
+      // (one that stepped aside leaves the one it brought back correctable; a plain decline blocks)
+      if (!stepAside(reply)) { last = status === 'pending' ? reply : null; lastAt = history.length - 1; }
+      continue;
+    }
     const rows = (reply.ids || []).map((id) => live.get(id)).filter(Boolean);
     const status = !reply.ids?.length ? 'none' : reply.undone ? 'undone' : reply.replacedBy ? 'replaced' : rows.length ? 'logged' : 'deleted';
     history.push({
@@ -952,13 +1029,75 @@ async function chatContext(pending) {
         name: e.name, grams: e.grams, where: [MEALS.find((x) => x.id === e.meal)?.label, dayWord(e.date)].filter(Boolean).join(' '),
       })) : null,
     });
-    if (reply.ids?.length) { last = status === 'logged' ? reply : null; lastAt = history.length - 1; }
+    // likewise for saved replies; one whose items were all deleted by hand blocks too
+    if (reply.ids?.length && !stepAside(reply)) {
+      last = status === 'logged' ? reply : null;
+      lastAt = history.length - 1;
+    }
   }
   if (last) history[lastAt].correctable = true;
   const shown = history.slice(-4);
   // a correctable message that scrolled out of what Claude sees cannot be corrected
   if (last && !shown.some((h) => h.correctable)) last = null;
   return { history: shown, last };
+}
+
+// Where an item not saved yet will go: its own meal and day, else the meal for the time of the message.
+function askWhere(r, now) {
+  const at = new Date(now);
+  return { meal: r.meal || mealForHour(at.getHours()), date: r.date || addDays(isoDate(at), r.dayOffset || 0) };
+}
+
+// Why an item is worth a look before saving ('' when it is not). The owner's choice: the chat saves
+// straight away and asks only when something is doubtful: Claude's own estimate (not in the database),
+// a database reading far from the chosen food, Claude was unsure what the food is, or counted pieces
+// that each weigh almost nothing, for a food this person has never logged (5 "vine leaves" at 5 g each).
+async function chatDoubts(items) {
+  const ids = [...new Set(items.map((r) => r.food.id))];
+  const known = new Set((await db.log.where('foodId').anyOf(ids).toArray()).map((e) => e.foodId));
+  return items.map((r) => {
+    const grams = gramsFor(r.food, r.amount, r.unit);
+    const kcal = nutrientsFor(r.food, grams).kcal;
+    const why = [];
+    if (r.estimated) why.push(`לא נמצא במאגר: ערכים משוערים (${fmt(r.food.kcal)} קק״ל ל-100 ג׳)`);
+    if (r.hint) why.push(r.hint);
+    if (r.unsure) why.push('לא היה ברור לגמרי מה בדיוק אכלת');
+    // counted pieces that each weigh almost nothing ("5 עלי גפן" at 5 g each, 18 kcal), for a food this
+    // person has never logged; not a spoon or a cup (those measure), and not vegetables or condiments
+    // weighed in grams, which are light by nature
+    const label = r.unit && r.unit !== 'g' ? normalize(unitLabel(r.food, r.unit)) : '';
+    const perPiece = label && r.amount > 0 ? grams / r.amount : 0;
+    if (label && !/(^| )(כפ|כפית|כוס|ספל|קורט|מצקת|מנה)( |$)/.test(label) && perPiece > 0 && perPiece < 10
+      && kcal < 30 && !known.has(r.food.id)) why.push(`כל יחידה שוקלת רק ${fmt1(perPiece)} ג׳ (${fmt(kcal)} קק״ל בסך הכל)`);
+    return why.join(' · ');
+  });
+}
+
+// Saves a chat message's items and, for a correction, removes what the target reply logged. Returns the
+// fields of the reply message. missed: the message was a correction but there is nothing to replace.
+async function commitChat(id, items, now, target, reply, missed) {
+  let saved = null;
+  let replaced = null;
+  try {
+    saved = await saveItemsDirect(items, now);
+    if (saved.error) throw saved.error;
+    if (!saved.ids.length) return { text: reply || CHAT_ERROR_TEXT.empty };
+    // the new items are saved, so what they replace can go. Claimed before any wait, so an undo tapped
+    // meanwhile sees it; kept even if removing stops partway, so undo can still bring all of it back.
+    if (target && !target.undone && !target.replacedBy) {
+      target.replacedBy = id;
+      replaced = { id: target.id, entries: [] };
+      replaced.entries = (await db.log.bulkGet(target.ids)).filter(Boolean);
+      for (const e of replaced.entries) await remove('entries', e.id);
+    }
+    const note = missed && !replaced ? 'לא מצאתי רישום קודם לתקן, אז זה נרשם כחדש.' : '';
+    return { text: [reply, note].filter(Boolean).join(' '), ids: saved.ids, estimated: saved.estimated, hints: saved.hints, replaced };
+  } catch (e) {
+    console.warn('chat saving failed', e?.message || e);
+    // part of the message was already saved when storage failed: show it, with its undo
+    if (saved?.ids.length) return { text: CHAT_ERROR_TEXT.partial, ids: saved.ids, estimated: saved.estimated, hints: saved.hints, replaced };
+    return { error: true, text: CHAT_ERROR_TEXT.local };
+  }
 }
 
 async function logChat(text, pending) {
@@ -968,8 +1107,17 @@ async function logChat(text, pending) {
     renderChat();
     if (state.view === 'today') renderToday();
   };
-  let saved = null;
-  let replaced = null;
+  // a short yes or no answering the question it was typed under, if that one still waits: the answer
+  // shows below the question, which turns into the outcome; the history Claude sees pairs each message
+  // with the reply after it. Otherwise the text goes to Claude like any other message.
+  const ask = pending.answerTo ? chat.msgs.find((m) => m.id === pending.answerTo && askWaits(m)) : null;
+  const answer = ask && (CHAT_YES.test(text) ? 'yes' : CHAT_NO.test(text) ? 'no' : '');
+  if (answer) {
+    chat.msgs.splice(chat.msgs.indexOf(pending), 1);
+    if (answer === 'yes') { ask.saving = true; await saveAsk(ask); } else dropChat(ask.id);
+    renderChat();
+    return;
+  }
   try {
     const apiKey = await getSetting('apiKey', '');
     if (!apiKey) throw new VisionError('no_key', 'no key');
@@ -978,11 +1126,21 @@ async function logChat(text, pending) {
     const { items: recognized, reply, replacesPrevious } = await analyzeText({ apiKey, text, now, history });
     if (!recognized.length) { finish({ text: reply || CHAT_ERROR_TEXT.empty }); return; }
     const items = resolveItems(recognized);
-    // a correction keeps the meal and day of what it corrects, unless it names others
-    const target = replacesPrevious && last && !last.undone && !last.replacedBy ? last : null;
-    const prev = target ? (await db.log.bulkGet(target.ids)).filter(Boolean) : [];
+    // the message it corrects: a saved reply, or one still waiting for confirmation (which is simply
+    // superseded, and passes on the saved reply it was itself going to replace)
+    let target = replacesPrevious && last && !last.undone && !last.replacedBy && !last.dropped ? last : null;
+    let prev = [];
+    // (the waiting question is marked replaced only once the correction is saved or asks in turn)
+    let supersede = null;
+    if (target?.ask) {
+      prev = target.ask.items.map((r) => ({ name: r.food.n, ...askWhere(r, target.ask.now) }));
+      supersede = target;
+      const before = target.ask.targetId && chat.msgs.find((x) => x.id === target.ask.targetId);
+      target = before && before.ids?.length && !before.undone && !before.replacedBy ? before : null;
+    } else if (target) prev = (await db.log.bulkGet(target.ids)).filter(Boolean);
     if (prev.length) {
-      // each corrected item takes after the replaced entry it is most like by name, else the same position
+      // a correction keeps the meal and day of what it corrects, unless it names others: each corrected
+      // item takes after the replaced one it is most like by name, else the same position
       const stems = (t) => new Set(normalize(t).split(' ').filter((w) => w.length >= 2).map((w) => w.slice(0, 3)));
       for (const [i, r] of items.entries()) {
         const mine = stems(`${r.query} ${r.food.n}`);
@@ -992,26 +1150,78 @@ async function logChat(text, pending) {
         if (!r.dayOffset) r.date = was.date;
       }
     }
-    saved = await saveItemsDirect(items, now);
-    if (saved.error) throw saved.error;
-    if (!saved.ids.length) { finish({ text: reply || CHAT_ERROR_TEXT.empty }); return; }
-    // the new items are saved, so what they replace can go. Claimed before any wait, so an undo tapped
-    // meanwhile sees it; kept even if removing stops partway, so undo can still bring all of it back.
-    if (prev.length && !target.undone && !target.replacedBy) {
-      target.replacedBy = pending.id;
-      replaced = { id: target.id, entries: prev };
-      for (const e of prev) await remove('entries', e.id);
+    const missed = replacesPrevious && !target && !prev.length;
+    const doubts = await chatDoubts(items);
+    const replaceAsk = (m) => {
+      if (supersede && !supersede.replacedBy && !supersede.dropped && (m.ask || m.ids?.length)) {
+        supersede.replacedBy = pending.id;
+        m.replacedAsk = supersede.id;
+      }
+      return m;
+    };
+    if (doubts.some(Boolean)) {
+      finish(replaceAsk({ text: reply, ask: { items, doubts, now: now.getTime(), targetId: target?.id ?? null, missed } }));
+      return;
     }
-    const note = replacesPrevious && !replaced ? 'לא מצאתי רישום קודם לתקן, אז זה נרשם כחדש.' : '';
-    finish({ text: [reply, note].filter(Boolean).join(' '), ids: saved.ids, estimated: saved.estimated, replaced });
+    finish(replaceAsk(await commitChat(pending.id, items, now, target, reply, missed)));
   } catch (e) {
     const code = e instanceof VisionError ? e.code : 'local';
     console.warn('chat logging failed', code, e?.message || e);
-    const text = CHAT_ERROR_TEXT[code] || CHAT_ERROR_TEXT.api;
-    // part of the message was already saved when storage failed: show it, with its undo
-    if (saved?.ids.length) finish({ text: CHAT_ERROR_TEXT.partial, ids: saved.ids, estimated: saved.estimated, replaced });
-    else finish({ error: true, text, settings: code === 'no_key' || code === 'auth' });
+    finish({ error: true, text: CHAT_ERROR_TEXT[code] || CHAT_ERROR_TEXT.api, settings: code === 'no_key' || code === 'auth' });
   }
+}
+
+// The person saves items that waited for confirmation: in the chat's queue, after any message still
+// being logged, and only if no correction replaced them meanwhile.
+function confirmChat(id) {
+  const m = chat.msgs.find((x) => x.id === id);
+  if (!m?.ask || m.replacedBy || m.dropped || m.saving) return chat.queue;
+  m.saving = true;
+  renderChat();
+  chat.busy++;
+  chat.queue = chat.queue.then(() => saveAsk(m)).finally(() => { chat.busy--; });
+  return chat.queue;
+}
+
+// Saves a waiting question's items (in the chat's queue; m.saving is already set).
+async function saveAsk(m) {
+  if (m.replacedBy || m.dropped) return;
+  const { items, now, targetId, missed } = m.ask;
+  const t = targetId && chat.msgs.find((x) => x.id === targetId);
+  // what this question was going to correct was corrected by another message meanwhile: saving it too
+  // would log the food twice
+  if (t?.replacedBy && t.replacedBy !== m.id) {
+    m.saving = false;
+    m.dropped = true;
+    // like any declined correction, it gives back the question it had replaced
+    const asked = m.replacedAsk && chat.msgs.find((x) => x.id === m.replacedAsk);
+    if (asked?.replacedBy === m.id) asked.replacedBy = null;
+    m.text = 'לא נרשם: הרישום שרצית לתקן כבר תוקן בהודעה אחרת.';
+    renderChat();
+    return;
+  }
+  const target = t && t.ids?.length && !t.undone && !t.replacedBy ? t : null;
+  const result = await commitChat(m.id, items, new Date(now), target, m.text, missed || (!!targetId && !target));
+  // (a question that itself replaced an earlier question keeps that link, so undo brings it back; when
+  // nothing was saved, the earlier question is back as it was)
+  if (!result.ids?.length && m.replacedAsk) {
+    const asked = chat.msgs.find((x) => x.id === m.replacedAsk);
+    if (asked?.replacedBy === m.id) asked.replacedBy = null;
+  }
+  const at = chat.msgs.indexOf(m);
+  if (at >= 0) chat.msgs.splice(at, 1, { id: m.id, ...result, ...(m.replacedAsk && result.ids?.length ? { replacedAsk: m.replacedAsk } : {}) });
+  renderChat();
+  if (state.view === 'today') renderToday();
+}
+
+function dropChat(id) {
+  const m = chat.msgs.find((x) => x.id === id);
+  if (!m?.ask || m.replacedBy || m.saving) return;
+  m.dropped = true;
+  // declining a correction that asked brings back the question it replaced
+  const asked = m.replacedAsk && chat.msgs.find((x) => x.id === m.replacedAsk);
+  if (asked?.replacedBy === m.id) asked.replacedBy = null;
+  renderChat();
 }
 
 // Flags change before any wait, so a correction being saved meanwhile sees them (and vice versa).
@@ -1023,6 +1233,9 @@ async function undoChat(id) {
   const old = m.replaced && chat.msgs.find((x) => x.id === m.replaced.id);
   if (old?.replacedBy === m.id) old.replacedBy = null;
   else if (old) return void (m.undone = false);
+  // and a waiting question it replaced
+  const asked = m.replacedAsk && chat.msgs.find((x) => x.id === m.replacedAsk);
+  if (asked?.replacedBy === m.id) asked.replacedBy = null;
   const prev = (await db.log.bulkGet(m.ids)).filter(Boolean);
   for (const e of prev) await remove('entries', e.id);
   if (old) for (const e of m.replaced.entries) await put('entries', e);
@@ -1032,6 +1245,11 @@ async function undoChat(id) {
     if (!m.undone) return;
     // the restored message was corrected again, or undone, meanwhile: redoing this one would duplicate
     if (old && (old.replacedBy || old.undone)) return;
+    // likewise the restored question, once answered or corrected again. Looked up again by id: saving a
+    // question replaces its message object, so the one captured above may be stale
+    const askedNow = asked && chat.msgs.find((x) => x.id === asked.id);
+    if (asked && (!askedNow || askedNow.replacedBy || askedNow.dropped || askedNow.saving || !askedNow.ask)) return;
+    if (askedNow) askedNow.replacedBy = m.id;
     m.undone = false;
     if (old) old.replacedBy = m.id;
     for (const e of prev) await put('entries', e);
@@ -1558,7 +1776,11 @@ function bind() {
   $('#chat-log').addEventListener('click', (e) => {
     const undo = e.target.closest('[data-chat-undo]');
     const edit = e.target.closest('[data-chat-edit]');
-    if (undo) undoChat(Number(undo.dataset.chatUndo));
+    const confirm = e.target.closest('[data-chat-confirm]');
+    const drop = e.target.closest('[data-chat-drop]');
+    if (confirm) confirmChat(Number(confirm.dataset.chatConfirm));
+    else if (drop) dropChat(Number(drop.dataset.chatDrop));
+    else if (undo) undoChat(Number(undo.dataset.chatUndo));
     else if (edit) editChatEntry(edit.dataset.chatEdit);
     else if (e.target.closest('[data-chat-settings]')) { show('settings'); $('#experimental').open = true; $('#api-key').focus(); }
   });
