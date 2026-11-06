@@ -264,3 +264,8 @@ test('rare forms are judged one by one; plain dried fruit before cooked dried fr
   assert.ok(!/מבושל/.test(top('שזיפים יבשים', 1)[0]), top('שזיפים יבשים').join(' | '));
   assert.ok(!top('שזיפים יבשים ללא סוכר').some((n) => /עם תוספת סוכר/.test(n)), top('שזיפים יבשים ללא סוכר').join(' | '));
 });
+
+test('a query that is only a homemade word is searched as typed', () => {
+  assert.ok(matchFood('של אמא', index, { limit: 3 }).length > 0);
+  assert.ok(matchFood('ביתי', index, { limit: 3 }).map((f) => f.n).includes('סלט חומוס, ביתי'));
+});
