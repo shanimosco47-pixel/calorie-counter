@@ -1,7 +1,7 @@
 import { store, db, put, remove, newId, getSetting, setSetting, dumpAll, restoreAll, recentFoods } from './lib/db.js';
 import { createSync } from './lib/sync.js';
 import { supabaseRemote } from './lib/remote.js';
-import { buildIndex, matchFood, normalize } from './lib/match.js';
+import { buildIndex, matchFood, normalize, queryNegations, foodPreference } from './lib/match.js';
 import {
   MEALS, ACTIVITY, GOALS, gramsFor, nutrientsFor, sumEntries, totalsByMeal, dailyTarget, targetInfo,
   macroTargets, mealForHour, isoDate, addDays, makeBackup, parseBackup, defaultAmount,
@@ -746,13 +746,20 @@ function forgetPhoto() {
 function resolveItems(recognized) {
   return recognized.map((it, i) => {
     // the primary search term, then each alternative term Claude gave (8 results each, no duplicates)
-    const search = (q) => matchFood(q, state.index, { limit: 8, boostIds: state.favIds });
+    // what the person said the food is without ("אורז בלי שמן") holds for every search term
+    const said = `${it.name} ${it.queries.join(' ')}`;
+    const { without } = queryNegations(normalize(`${it.name} ${it.queries[0] || ''}`));
+    const suffix = without.map((w) => ` ללא ${w}`).join('');
+    const search = (q) => matchFood(q + suffix, state.index, { limit: 8, boostIds: state.favIds });
     const candidates = search(it.queries[0] || it.name);
     const seen = new Set(candidates.map((f) => f.id));
     const alternatives = it.queries.slice(1)
-      .flatMap((q) => search(q).map((f) => ({ ...f, altQuery: q })))
+      .flatMap((q) => search(q).map((f, altRank) => ({ ...f, altQuery: q, altRank })))
       .filter((f) => !seen.has(f.id) && seen.add(f.id));
-    const { food, estimated } = pickFood(it, candidates, { alternatives, makeId: () => 'a' + Date.now().toString(36) + i });
+    // Claude names generic foods: a branded product only when nothing generic fits (or the brand was said)
+    const { food, estimated } = pickFood(it, candidates, {
+      alternatives, rank: (f) => foodPreference(f, said), makeId: () => 'a' + Date.now().toString(36) + i,
+    });
     const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
       : (it.name !== food.n ? `זוהה: ${it.name}` : '');
     return { food, ...amountFor(it, food, unitLabel), note, query: it.name, estimated, meal: it.meal, dayOffset: it.dayOffset };

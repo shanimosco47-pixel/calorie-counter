@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { normalize, buildIndex, matchFood, STAPLES, brandOf } from '../../lib/match.js';
+import { normalize, buildIndex, matchFood, STAPLES, brandOf, foodPreference, queryNegations, splitNegated } from '../../lib/match.js';
 
 const data = JSON.parse(readFileSync(new URL('../../data/tzameret.json', import.meta.url)));
 const index = buildIndex(data.foods);
@@ -147,4 +147,74 @@ test('"homemade" never lands on a factory product, and the word itself is not re
   assert.equal(matchFood('חומוס ביתי', index, { limit: 1 })[0].n, 'סלט חומוס, ביתי');
   assert.match(matchFood('לחם ביתי', index, { limit: 1 })[0].n, /^לחם ביתי/);   // not the sliced-loaf staple
   assert.ok(matchFood('ביתי', index, { limit: 3 }).length > 0);   // the word alone is searched as typed
+});
+
+test('"ללא שמן" / "בלי שמן": foods cooked with oil are left out; the no-fat version comes first', () => {
+  for (const q of ['אורז לבן מבושל ללא שמן', 'אורז בלי שמן', 'אורז לבן ללא שמן']) {
+    const top = matchFood(q, index, { limit: 5 }).map((f) => f.n);
+    assert.ok(top.length, q);
+    assert.match(top[0], /ללא תוספת שומן/, `${q}: ${top.join(' | ')}`);
+    assert.ok(top.every((n) => !/עם שמן/.test(n)), `${q}: ${top.join(' | ')}`);
+  }
+  assert.match(matchFood('סלט ירקות ללא שמן', index, { limit: 1 })[0].n, /ללא תוספת שמן/);
+  assert.match(matchFood('אורז לבן מבושל', index, { limit: 1 })[0].n, /ללא תוספת שומן/);   // plain cooked rice
+});
+
+test('chicken eaten with the skin only when the skin is mentioned', () => {
+  assert.match(matchFood('חזה עוף צלוי', index, { limit: 1 })[0].n, /נאכל ללא עור/);
+});
+
+test('a synonym never drops a typed word: grilled breast is breast, not thigh', () => {
+  const top = matchFood('חזה עוף בגריל', index, { limit: 8 }).map((f) => f.n);
+  assert.ok(top.every((n) => /חזה/.test(n)), top.join(' | '));
+});
+
+test('foodPreference: generic or staple 0, unrequested skin 1, unnamed brand 2', () => {
+  const f = (n) => ({ n });
+  assert.equal(foodPreference(f('בשר עוף, חזה, ללא עצם, צלוי, נאכל ללא עור'), 'חזה עוף בגריל'), 0);
+  assert.equal(foodPreference(f('בשר עוף, חזה, ללא עצם, בגריל, נאכל עם עור'), 'חזה עוף בגריל'), 1);
+  assert.equal(foodPreference(f('בשר עוף, חזה, ללא עצם, בגריל, נאכל עם עור'), 'חזה עוף עם עור'), 0);
+  assert.equal(foodPreference(f('בשר עוף, חזה במרינדה, בגריל, מאמא עוף'), 'חזה עוף בגריל'), 2);
+  assert.equal(foodPreference(f('בשר עוף, חזה במרינדה, בגריל, מאמא עוף'), 'חזה עוף של מאמא עוף'), 0);
+  assert.equal(foodPreference(f('חמאה, תנובה, טרה'), 'חמאה'), 0);   // the staple
+  assert.equal(foodPreference(f('סלט, מעורב'), 'סלט מעורב בלי עור'), 0);   // "עור" is not "מעורב"
+});
+
+test('negations: whole words, multi-word oils, ו-joined words, fat percentages', () => {
+  assert.deepEqual(queryNegations(normalize('סלט בלי שמן זית')), { plain: 'סלט', without: ['שמנ', 'שומנ', 'חמאה', 'מרגרינה'] });
+  assert.deepEqual(queryNegations(normalize('פסטה בלי חלב ושמנת')).without, ['חלב', 'שמנת']);
+  assert.deepEqual(queryNegations(normalize('פסטה בלי שמנת')).without, ['שמנת']);   // cream is not oil
+  // "X% שומן" is how much fat, not added fat; 0% counts as without
+  assert.ok(!hasFat(splitNegated('יוגורט 0% שומן, יופלה, טבעי, תנובה').pos));
+  assert.match(splitNegated('יוגורט 0% שומן, יופלה').neg, /ללא שומנ/);
+  // the without-part ends at the next "עם"
+  assert.match(splitNegated('מקלובה עם ירקות ללא בשר עם שמן קנולה').pos, /שמנ קנולה/);
+});
+const hasFat = (t) => /(^| )שומנ( |$)/.test(t);
+
+test('"ללא" with a staple: the staple steps back ("לחם ללא גלוטן" is not the everyday loaf)', () => {
+  const first = (q) => matchFood(q, index, { limit: 1 })[0].n;
+  assert.match(first('לחם ללא גלוטן'), /ללא גלוטן/);
+  assert.match(first('חלב ללא שומן'), /^חלב 1% שומן/);   // the leanest milk, never breast milk
+  assert.match(first('גבינה לבנה ללא שומן'), /0\.5% שומן/);
+  assert.match(first('קוטג ללא שומן'), /0\.5% שומן/);
+  assert.match(first('אורז ללא שמן'), /ללא תוספת שומן/);
+  assert.ok(!/חלב אמ|חלב אם/.test(matchFood('חלב', index, { limit: 2 }).map((f) => f.n).join()));
+});
+
+test('review round 3: Latin-capital makers are brands; plant-based only when said; ו-words; "דל X"; staples with ללא', () => {
+  assert.ok(brandOf('דגני בוקר, קורנפלקס UK ,KELLOGGS'));
+  assert.ok(brandOf('המבורגר, בורגר מן הצומח, טבע דלי'));
+  assert.equal(foodPreference({ n: 'המבורגר מן הצומח' }, 'המבורגר'), 1);
+  assert.equal(foodPreference({ n: 'המבורגר מן הצומח' }, 'המבורגר מן הצומח'), 0);
+  assert.deepEqual(queryNegations(normalize('גלידה ללא סוכר וניל')), { plain: 'גלידה וניל', without: ['סוכר'] });
+  assert.match(splitNegated('חלב 2% שומן, כולל דל לקטוז, תנובה').neg, /ללא לקטוז/);
+  assert.match(matchFood('חלב ללא לקטוז', index, { limit: 1 })[0].n, /לקטוז/);
+  assert.match(matchFood('ביצים בלי קליפה', index, { limit: 1 })[0].n, /^ביצה שלמה/);
+});
+
+test('the index reuses prepared database foods between rebuilds', () => {
+  const a = buildIndex(data.foods.slice(0, 50));
+  const b = buildIndex(data.foods.slice(0, 50));
+  assert.equal(a[0], b[0]);
 });

@@ -246,13 +246,14 @@ test('meal photo: recognized items open the confirm sheet, matched or estimated'
   expect(request.body.messages[0].content[0].source.media_type).toBe('image/jpeg');
   const rows = page.locator('#confirm-items .confirm-item');
   await expect(rows).toHaveCount(2);
-  await expect(rows.nth(0).locator('.ci-name')).toContainText('אורז לבן מבושל');
+  // plain cooked rice is the no-added-fat version, not rice cooked with oil
+  await expect(rows.nth(0).locator('.ci-name')).toContainText('אורז לבן, מבושל, ללא תוספת שומן');
   await expect(rows.nth(0).getByTestId('amount')).toHaveValue('150');
   await expect(rows.nth(1).getByTestId('item-note')).toContainText('ערכים משוערים');
-  await expect(page.getByTestId('confirm-total')).toHaveText(String(Math.round(150 * 1.45 + 80 * 4)));
+  await expect(page.getByTestId('confirm-total')).toHaveText(String(Math.round(150 * 1.30 + 80 * 4)));
   await page.getByTestId('confirm-save').click();
   await page.getByTestId('nav-today').click();
-  await expect(page.getByTestId('eaten')).toHaveText(String(Math.round(150 * 1.45 + 80 * 4)));
+  await expect(page.getByTestId('eaten')).toHaveText(String(Math.round(150 * 1.30 + 80 * 4)));
 });
 
 test('meal photo: scrambled eggs open as 3 eggs, matched to the database through an alternative term', async ({ page }) => {

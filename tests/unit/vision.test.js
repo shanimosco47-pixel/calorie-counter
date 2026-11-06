@@ -209,3 +209,32 @@ test('text request: earlier messages and what they logged come before the new on
   const body = { content: [{ type: 'text', text: JSON.stringify({ items: [{ ...item, meal: 'dinner', day_offset: 0 }], reply: '', replaces_previous: true }) }] };
   assert.equal(parseTextResponse(body).replacesPrevious, true);
 });
+
+test('pickFood with rank: a generic food near the top beats the branded one; brand only as a fallback', () => {
+  const food = (id, n, kcal, rank) => ({ id, n, kcal, rank });
+  const it = { name: 'חזה עוף בגריל', query: 'חזה עוף בגריל', kcal: 165, grams: 150, p: 0, c: 0, f: 0, unit: null };
+  const rank = (f) => f.rank;
+  const brand = food('b', 'חזה בגריל, מאמא עוף', 130, 2);
+  const skin = food('s', 'חזה, בגריל, נאכל עם עור', 195, 1);
+  const plain = food('g', 'חזה עוף, בגריל, ללא עור', 160, 0);
+  // a generic alternative (rank 0) wins over a branded primary
+  assert.equal(pickFood(it, [brand, skin], { rank, alternatives: [{ ...plain, altQuery: 'חזה עוף', altRank: 0 }] }).food.id, 'g');
+  // no generic: the skin version before the brand
+  assert.equal(pickFood(it, [brand, skin], { rank }).food.id, 's');
+  // only branded: still a database food, not an estimate
+  assert.equal(pickFood(it, [brand], { rank }).food.id, 'b');
+  // without rank, the order is as before
+  assert.equal(pickFood(it, [brand, skin]).food.id, 'b');
+  // the alternative's tags never reach the diary
+  const picked = pickFood(it, [brand], { rank, alternatives: [{ ...plain, altQuery: 'חזה עוף', altRank: 0 }] }).food;
+  assert.equal('altRank' in picked || 'altQuery' in picked, false);
+});
+
+test('pickFood with rank: passing over the first result needs a closer calorie match', () => {
+  const it = { name: 'כנפיים', query: 'כנפי עוף', kcal: 250, grams: 100, p: 0, c: 0, f: 0, unit: null };
+  const brand = { id: 'b', n: 'כנפיים בגריל, מאמא עוף', kcal: 172, rank: 2 };
+  const fried = { id: 'f', n: 'כנפיים מצופות מטוגנות', kcal: 318, rank: 0 };   // 27% off: not enough to skip the first
+  assert.equal(pickFood(it, [brand, fried], { rank: (f) => f.rank }).food.id, 'b');
+  const close = { ...fried, id: 'c', kcal: 240 };
+  assert.equal(pickFood(it, [brand, close], { rank: (f) => f.rank }).food.id, 'c');
+});

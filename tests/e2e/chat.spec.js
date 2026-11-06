@@ -270,3 +270,20 @@ test('chat: a correction with nothing left to replace is logged as new and says 
   expect(bodies[1].messages[0].content).not.toMatch(/אפשר לתקן/);
   expect((await entries(page)).map((e) => e.grams)).toEqual([50]);
 });
+
+test('chat: "without oil" holds for every search term; grilled breast is not a branded product', async ({ page }) => {
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: answer([
+    // "ללא שמן" only in the name: the plain search terms would find rice cooked with oil first
+    item({ name: 'אורז לבן ללא שמן', query: 'אורז לבן מבושל', alt_queries: ['אורז'], grams: 125, kcal_per_100g: 135, meal: 'lunch' }),
+    item({ name: 'חזה עוף בגריל', query: 'חזה עוף בגריל', grams: 150, kcal_per_100g: 170, meal: 'lunch' }),
+  ]) }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('125 גרם אורז לבן בלי שמן ו-150 גרם חזה עוף בגריל');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(2);
+  const [rice, chicken] = await entries(page);
+  expect(rice.name).toMatch(/ללא תוספת שומן/);
+  expect(rice.name).not.toMatch(/עם שמן/);
+  expect(chicken.name).toMatch(/חזה/);
+  expect(chicken.name).not.toMatch(/מאמא עוף|עוף טוב|עוף העמק/);
+});
