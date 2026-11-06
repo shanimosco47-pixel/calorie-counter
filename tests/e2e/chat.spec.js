@@ -345,22 +345,63 @@ test('chat: a doubtful item waits; declining saves nothing; a correction replace
   expect(saved).toHaveLength(1);
 });
 
-test('chat: very few calories for a food never logged asks once; once logged it does not; black coffee never asks', async ({ page }) => {
-  const cucumber = answer([item({ name: 'מלפפון', query: 'מלפפון', grams: 50, kcal_per_100g: 15, meal: 'lunch' })]);
-  const coffee = answer([item({ name: 'קפה שחור', query: 'קפה שחור', alt_queries: ['קפה'], grams: 240, kcal_per_100g: 2, meal: 'lunch' })]);
-  let n = 0;
-  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: [cucumber, cucumber, coffee][n++] }));
+test('chat: typing "כן" saves the waiting items without asking Claude; "לא" drops them', async ({ page }) => {
+  let calls = 0;
+  const ask = answer([item({ name: 'מאפה פלאפלוני', query: 'מאפה פלאפלוני', grams: 80, kcal_per_100g: 333 })]);
+  await page.route('https://api.anthropic.com/**', (route) => { calls++; return route.fulfill({ json: ask }); });
   await withKey(page);
-  await page.getByTestId('chat-input').fill('חצי מלפפון');
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
   await page.getByTestId('chat-send').click();
-  await expect(page.getByTestId('chat-doubt')).toContainText('מעט מאוד קלוריות');
-  await page.getByTestId('chat-confirm').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('כן');
+  await page.getByTestId('chat-send').click();
   await expect(page.getByTestId('chat-item')).toHaveCount(1);
-  await page.getByTestId('chat-input').fill('עוד חצי מלפפון');
+  expect(calls).toBe(1);
+  expect(await entries(page)).toHaveLength(1);
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
   await page.getByTestId('chat-send').click();
-  await expect(page.getByTestId('chat-item')).toHaveCount(2);   // saved straight away this time
-  await page.getByTestId('chat-input').fill('קפה שחור');
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('לא');
   await page.getByTestId('chat-send').click();
-  await expect(page.getByTestId('chat-item')).toHaveCount(3);
+  await expect(page.getByTestId('chat-reply').last()).toContainText('לא נרשם ליומן');
+  expect(calls).toBe(2);
+  expect(await entries(page)).toHaveLength(1);
+});
+
+test('chat: undoing a correction of a waiting question brings the question back', async ({ page }) => {
+  const replies = [
+    answer([item({ name: 'מאפה פלאפלוני', query: 'מאפה פלאפלוני', grams: 80, kcal_per_100g: 333 })]),
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({
+      items: [item({ name: 'פיתה', query: 'פיתה', grams: 100, unit_name: 'פיתה', unit_count: 1, unit_grams: 100, kcal_per_100g: 250 })],
+      reply: '', replaces_previous: true }) }] },
+  ];
+  let n = 0;
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: replies[n++] }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('לא, פיתה');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
   await expect(page.getByTestId('chat-ask')).toHaveCount(0);
+  await page.getByTestId('chat-undo').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);   // the question is back, with its buttons
+  expect(await entries(page)).toEqual([]);
+});
+
+test('chat: a light counted piece of a new food asks; a vegetable in grams does not', async ({ page }) => {
+  const replies = [
+    answer([item({ name: 'מלפפון', query: 'מלפפון', grams: 100, kcal_per_100g: 15, meal: 'lunch' })]),
+    answer([item({ name: 'עלי גפן', query: 'עלי גפן', grams: 25, unit_name: 'עלה', unit_count: 5, unit_grams: 5, kcal_per_100g: 93 })]),
+  ];
+  let n = 0;
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: replies[n++] }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('מלפפון');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('5 עלי גפן');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-doubt')).toContainText('כל יחידה שוקלת רק');
 });
