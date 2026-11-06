@@ -248,3 +248,19 @@ test('the brand-plus-description rule is only for brands that are not food words
   assert.match(matchFood('סלט מלפפונים ביתי', index, { limit: 8 }).map((f) => f.n).join('|'), /שמיר/);
   assert.equal(foodPreference({ n: 'תמ"ל, נוטרילון, שלב 1, מוכן לשתייה' }, 'חלב'), 3);
 });
+
+test('review round 2: dried keeps "ללא"; milk powder; tomatoes; "ביתי" does not hide "יבש"', () => {
+  const top = (q, n = 3) => matchFood(q, index, { limit: n }).map((f) => f.n);
+  assert.ok(!top('תאנים יבשות ללא סוכר').some((n) => /עם סוכר/.test(n)), top('תאנים יבשות ללא סוכר').join(' | '));
+  assert.match(top('חלב יבש')[0], /חלב מיובש/);
+  assert.match(top('עגבניות יבשות')[0], /עגבניות.*מיובשות/);
+  assert.match(top('שיבולת שועל יבשה ביתי')[0], /לא מבושל/);
+  assert.match(top('שזיפים יבשים')[0], /^שזיף, מיובש/);
+});
+
+test('rare forms are judged one by one; plain dried fruit before cooked dried fruit', () => {
+  const top = (q, n = 3) => matchFood(q, index, { limit: n }).map((f) => f.n);
+  assert.ok(!/אבקה/.test(top('תמל', 1)[0]), top('תמל').join(' | '));   // ready-to-drink before powder, as before
+  assert.ok(!/מבושל/.test(top('שזיפים יבשים', 1)[0]), top('שזיפים יבשים').join(' | '));
+  assert.ok(!top('שזיפים יבשים ללא סוכר').some((n) => /עם תוספת סוכר/.test(n)), top('שזיפים יבשים ללא סוכר').join(' | '));
+});
