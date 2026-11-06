@@ -201,3 +201,20 @@ test('"ללא" with a staple: the staple steps back ("לחם ללא גלוטן" 
   assert.match(first('אורז ללא שמן'), /ללא תוספת שומן/);
   assert.ok(!/חלב אמ|חלב אם/.test(matchFood('חלב', index, { limit: 2 }).map((f) => f.n).join()));
 });
+
+test('review round 3: Latin-capital makers are brands; plant-based only when said; ו-words; "דל X"; staples with ללא', () => {
+  assert.ok(brandOf('דגני בוקר, קורנפלקס UK ,KELLOGGS'));
+  assert.ok(brandOf('המבורגר, בורגר מן הצומח, טבע דלי'));
+  assert.equal(foodPreference({ n: 'המבורגר מן הצומח' }, 'המבורגר'), 1);
+  assert.equal(foodPreference({ n: 'המבורגר מן הצומח' }, 'המבורגר מן הצומח'), 0);
+  assert.deepEqual(queryNegations(normalize('גלידה ללא סוכר וניל')), { plain: 'גלידה וניל', without: ['סוכר'] });
+  assert.match(splitNegated('חלב 2% שומן, כולל דל לקטוז, תנובה').neg, /ללא לקטוז/);
+  assert.match(matchFood('חלב ללא לקטוז', index, { limit: 1 })[0].n, /לקטוז/);
+  assert.match(matchFood('ביצים בלי קליפה', index, { limit: 1 })[0].n, /^ביצה שלמה/);
+});
+
+test('the index reuses prepared database foods between rebuilds', () => {
+  const a = buildIndex(data.foods.slice(0, 50));
+  const b = buildIndex(data.foods.slice(0, 50));
+  assert.equal(a[0], b[0]);
+});

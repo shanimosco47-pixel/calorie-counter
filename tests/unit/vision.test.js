@@ -229,3 +229,12 @@ test('pickFood with rank: a generic food near the top beats the branded one; bra
   const picked = pickFood(it, [brand], { rank, alternatives: [{ ...plain, altQuery: 'חזה עוף', altRank: 0 }] }).food;
   assert.equal('altRank' in picked || 'altQuery' in picked, false);
 });
+
+test('pickFood with rank: passing over the first result needs a closer calorie match', () => {
+  const it = { name: 'כנפיים', query: 'כנפי עוף', kcal: 250, grams: 100, p: 0, c: 0, f: 0, unit: null };
+  const brand = { id: 'b', n: 'כנפיים בגריל, מאמא עוף', kcal: 172, rank: 2 };
+  const fried = { id: 'f', n: 'כנפיים מצופות מטוגנות', kcal: 318, rank: 0 };   // 27% off: not enough to skip the first
+  assert.equal(pickFood(it, [brand, fried], { rank: (f) => f.rank }).food.id, 'b');
+  const close = { ...fried, id: 'c', kcal: 240 };
+  assert.equal(pickFood(it, [brand, close], { rank: (f) => f.rank }).food.id, 'c');
+});
