@@ -160,6 +160,8 @@ test('chat: no meal said uses the meal for now; a food not in the database is ma
   await page.getByTestId('chat-send').click();
   await expect(page.getByTestId('chat-item')).toHaveCount(1);
   await expect(page.getByTestId('chat-item')).toContainText('ערכים משוערים');
+  // its calories per 100 g are shown, so an implausible estimate is easy to spot
+  await expect(page.getByTestId('chat-item')).toContainText('333 קק״ל ל-100 ג׳');
   const meal = await page.evaluate(async () => { const { mealForHour } = await import('./lib/calc.js'); return mealForHour(new Date().getHours()); });
   expect((await entries(page)).map((e) => [e.meal, e.kcal])).toEqual([[meal, 266]]);
 });

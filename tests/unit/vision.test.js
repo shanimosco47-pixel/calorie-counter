@@ -246,3 +246,14 @@ test('pickFood: a food ranked "never" (3) is not even a fallback; the chat promp
   assert.equal(r.estimated, true);
   assert.match(buildTextRequest('x').system, /לא מבושל/);
 });
+
+test('both prompts read foods as eaten in Israel: dishes not raw ingredients, named products as sold, a self-check', () => {
+  for (const system of [buildRequest('x').system, buildTextRequest('x').system]) {
+    assert.match(system, /עלי גפן/);
+    assert.match(system, /stuffed/);
+    assert.match(system, /estimate that product as sold/);
+    assert.match(system, /surprise someone/);
+    assert.match(system, /without a prefix letter/);
+  }
+  assert.match(buildTextRequest('x').system, /say in a few words what you assumed/);
+});

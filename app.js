@@ -760,7 +760,7 @@ function resolveItems(recognized) {
     const { food, estimated } = pickFood(it, candidates, {
       alternatives, rank: (f) => foodPreference(f, said), makeId: () => 'a' + Date.now().toString(36) + i,
     });
-    const note = estimated ? `זוהה: ${it.name} · ערכים משוערים, לא נמצא במאגר`
+    const note = estimated ? `זוהה: ${it.name} · ערכים משוערים (${fmt(food.kcal)} קק״ל ל-100 ג׳), לא נמצא במאגר`
       : (it.name !== food.n ? `זוהה: ${it.name}` : '');
     return { food, ...amountFor(it, food, unitLabel), note, query: it.name, estimated, meal: it.meal, dayOffset: it.dayOffset };
   });
@@ -883,7 +883,9 @@ async function renderChat() {
     const total = rows.reduce((s, e) => s + (Number(e.kcal) || 0), 0);
     const items = rows.map((e) => {
       const where = [MEALS.find((x) => x.id === e.meal)?.label, dayWord(e.date)].filter(Boolean).join(' · ');
-      const est = m.estimated?.includes(e.id) ? ' · ערכים משוערים' : '';
+      // an estimate shows its calories per 100 g, so an implausible one is easy to spot
+      const per100 = e.grams > 0 ? Math.round((Number(e.kcal) || 0) / e.grams * 100) : 0;
+      const est = m.estimated?.includes(e.id) ? ` · ערכים משוערים (${fmt(per100)} קק״ל ל-100 ג׳)` : '';
       return `<li data-testid="chat-item"><span class="grow"><span class="name">${esc(e.name)}</span>
         <span class="sub">${esc(amountText(e))} · ${esc(where)}${est}</span></span>
         <span class="kcal">${fmt(e.kcal)} קק״ל</span>
