@@ -218,3 +218,54 @@ test('the index reuses prepared database foods between rebuilds', () => {
   const b = buildIndex(data.foods.slice(0, 50));
   assert.equal(a[0], b[0]);
 });
+
+test('dry ingredients: "יבשה" / "לא מבושלת" find the uncooked food; baby food is never an adult pick', () => {
+  const first = (q) => matchFood(q, index, { limit: 1 })[0].n;
+  assert.match(first('שיבולת שועל יבשה'), /^שיבולת שועל.*לא מבושל/);
+  assert.match(first('שיבולת שועל לא מבושלת'), /^שיבולת שועל.*לא מבושל/);
+  assert.match(first('שיבולת שועל'), /מבושל/);   // without "dry", cooked first as before
+  assert.ok(!/לא מבושל/.test(first('שיבולת שועל')));
+  assert.equal(brandOf('דייסת תינוקות, שיבולת שועל/דגנים מעורבים, אבקה, B&D מועשרת'), normalize('B&D'));
+  assert.equal(foodPreference({ n: 'דייסת תינוקות, שיבולת שועל, B&D מועשרת' }, 'דייסת שיבולת שועל'), 3);
+  assert.equal(foodPreference({ n: 'דייסת תינוקות, שיבולת שועל, B&D מועשרת' }, 'דייסה לתינוק'), 2);
+});
+
+test('"יבש" means uncooked only for foods the database has uncooked; otherwise dried (fruit) or dry (wine)', () => {
+  const first = (q) => matchFood(q, index, { limit: 1 })[0].n;
+  assert.match(first('תאנים יבשות'), /^תאנה, מיובשת/);
+  assert.match(first('שזיפים יבשים'), /^שזיף, מיובש/);
+  assert.match(first('משמש יבש'), /^משמש, מיובש/);
+  assert.match(first('יין לבן יבש'), /יין לבן/);
+  assert.match(first('יין יבש'), /יין/);
+  assert.match(first('אורז יבש'), /לא מבושל/);
+  assert.match(first('פסטה יבשה'), /לא מבושל/);
+});
+
+test('the brand-plus-description rule is only for brands that are not food words (dill is not a brand)', () => {
+  assert.equal(brandOf('סלט מלפפונים עם בצל, שמיר ושמן סויה'), '');
+  assert.equal(brandOf('מרק, מוכן מאבקת מרק עוף עם גזר, שמיר ופטרוזיליה'), '');
+  assert.ok(brandOf('דייסת תינוקות, שיבולת שועל/דגנים מעורבים, אבקה, B&D מועשרת'));
+  assert.match(matchFood('סלט מלפפונים ביתי', index, { limit: 8 }).map((f) => f.n).join('|'), /שמיר/);
+  assert.equal(foodPreference({ n: 'תמ"ל, נוטרילון, שלב 1, מוכן לשתייה' }, 'חלב'), 3);
+});
+
+test('review round 2: dried keeps "ללא"; milk powder; tomatoes; "ביתי" does not hide "יבש"', () => {
+  const top = (q, n = 3) => matchFood(q, index, { limit: n }).map((f) => f.n);
+  assert.ok(!top('תאנים יבשות ללא סוכר').some((n) => /עם סוכר/.test(n)), top('תאנים יבשות ללא סוכר').join(' | '));
+  assert.match(top('חלב יבש')[0], /חלב מיובש/);
+  assert.match(top('עגבניות יבשות')[0], /עגבניות.*מיובשות/);
+  assert.match(top('שיבולת שועל יבשה ביתי')[0], /לא מבושל/);
+  assert.match(top('שזיפים יבשים')[0], /^שזיף, מיובש/);
+});
+
+test('rare forms are judged one by one; plain dried fruit before cooked dried fruit', () => {
+  const top = (q, n = 3) => matchFood(q, index, { limit: n }).map((f) => f.n);
+  assert.ok(!/אבקה/.test(top('תמל', 1)[0]), top('תמל').join(' | '));   // ready-to-drink before powder, as before
+  assert.ok(!/מבושל/.test(top('שזיפים יבשים', 1)[0]), top('שזיפים יבשים').join(' | '));
+  assert.ok(!top('שזיפים יבשים ללא סוכר').some((n) => /עם תוספת סוכר/.test(n)), top('שזיפים יבשים ללא סוכר').join(' | '));
+});
+
+test('a query that is only a homemade word is searched as typed', () => {
+  assert.ok(matchFood('של אמא', index, { limit: 3 }).length > 0);
+  assert.ok(matchFood('ביתי', index, { limit: 3 }).map((f) => f.n).includes('סלט חומוס, ביתי'));
+});

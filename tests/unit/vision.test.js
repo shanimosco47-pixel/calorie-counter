@@ -238,3 +238,11 @@ test('pickFood with rank: passing over the first result needs a closer calorie m
   const close = { ...fried, id: 'c', kcal: 240 };
   assert.equal(pickFood(it, [brand, close], { rank: (f) => f.rank }).food.id, 'c');
 });
+
+test('pickFood: a food ranked "never" (3) is not even a fallback; the chat prompt asks for the dry ingredient', () => {
+  const it = { name: 'דייסת שיבולת שועל', query: 'דייסת שיבולת שועל', kcal: 380, grams: 70, p: 13, c: 67, f: 7, unit: null };
+  const baby = { id: 'b', n: 'דייסת תינוקות, אבקה', kcal: 380 };
+  const r = pickFood(it, [baby], { rank: () => 3 });
+  assert.equal(r.estimated, true);
+  assert.match(buildTextRequest('x').system, /לא מבושל/);
+});
