@@ -960,11 +960,11 @@ const CHAT_NO = /^(לא|ממש לא|אל תרשום|אל תרשמי|לא לרש�
 
 const askWaits = (m) => !!m?.ask && !m.replacedBy && !m.dropped && !m.saving;
 
-// The question on screen when a message is sent: the latest reply shown (not a message still being
-// logged), when it is a waiting question. A question that appears later was not seen yet.
+// The question on screen when a message is sent: the latest question still waiting among the replies
+// shown (not messages still being logged). It need not be the newest reply: declining or undoing a
+// correction brings an earlier question back. A question that appears later was not seen yet.
 function shownAsk() {
-  const last = [...chat.msgs].reverse().find((m) => !m.me && !m.pending);
-  return askWaits(last) ? last : null;
+  return [...chat.msgs].reverse().find((m) => !m.me && !m.pending && askWaits(m)) || null;
 }
 
 function sendChat(text) {
@@ -1231,9 +1231,11 @@ async function undoChat(id) {
     if (!m.undone) return;
     // the restored message was corrected again, or undone, meanwhile: redoing this one would duplicate
     if (old && (old.replacedBy || old.undone)) return;
-    // likewise the restored question, once answered or corrected again
-    if (asked && (asked.replacedBy || asked.dropped || !asked.ask)) return;
-    if (asked) asked.replacedBy = m.id;
+    // likewise the restored question, once answered or corrected again. Looked up again by id: saving a
+    // question replaces its message object, so the one captured above may be stale
+    const askedNow = asked && chat.msgs.find((x) => x.id === asked.id);
+    if (asked && (!askedNow || askedNow.replacedBy || askedNow.dropped || askedNow.saving || !askedNow.ask)) return;
+    if (askedNow) askedNow.replacedBy = m.id;
     m.undone = false;
     if (old) old.replacedBy = m.id;
     for (const e of prev) await put('entries', e);

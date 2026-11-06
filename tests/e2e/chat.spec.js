@@ -456,3 +456,53 @@ test('chat: a "כן" typed while another message is logging answers the question
   await expect(page.getByTestId('chat-ask')).toContainText('עוגיית פלאפלון');
   expect((await entries(page)).map((e) => e.name)).toEqual(['מאפה פלאפלוני']);
 });
+
+test('chat: "כן" answers a question brought back by declining its correction', async ({ page }) => {
+  const replies = [
+    answer([item({ name: 'מאפה פלאפלוני', query: 'מאפה פלאפלוני', grams: 80, kcal_per_100g: 333 })]),
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({
+      items: [item({ name: 'מאפה גבינה פלאפלוני', query: 'מאפה גבינה פלאפלוני', grams: 90, kcal_per_100g: 340 })],
+      reply: '', replaces_previous: true }) }] },
+  ];
+  let n = 0;
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: replies[n++] }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('בעצם עם גבינה');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-reply').first()).toContainText('הוחלף');
+  await page.getByTestId('chat-drop').click();
+  await expect(page.getByTestId('chat-ask')).toContainText('מאפה פלאפלוני');
+  await page.getByTestId('chat-input').fill('כן');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  expect(n).toBe(2);   // answered here, without asking Claude
+  expect((await entries(page)).map((e) => e.name)).toEqual(['מאפה פלאפלוני']);
+});
+
+test('chat: undo a correction, confirm the question it brought back, then the toast cannot redo the correction', async ({ page }) => {
+  const replies = [
+    answer([item({ name: 'מאפה פלאפלוני', query: 'מאפה פלאפלוני', grams: 80, kcal_per_100g: 333 })]),
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({
+      items: [item({ name: 'פיתה', query: 'פיתה', grams: 100, unit_name: 'פיתה', unit_count: 1, unit_grams: 100, kcal_per_100g: 250 })],
+      reply: '', replaces_previous: true }) }] },
+  ];
+  let n = 0;
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: replies[n++] }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('לא, פיתה');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  await page.getByTestId('chat-undo').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-confirm').click();
+  await expect.poll(async () => (await entries(page)).length).toBe(1);
+  await page.locator('#toast-undo').click();   // the "undo the undo" of the correction
+  await page.waitForTimeout(300);
+  expect((await entries(page)).map((e) => e.name)).toEqual(['מאפה פלאפלוני']);
+});
