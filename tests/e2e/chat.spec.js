@@ -506,3 +506,81 @@ test('chat: undo a correction, confirm the question it brought back, then the to
   await page.waitForTimeout(300);
   expect((await entries(page)).map((e) => e.name)).toEqual(['מאפה פלאפלוני']);
 });
+
+test('chat: a "לא" after a newer reply answers that reply (goes to Claude), not an older ignored question', async ({ page }) => {
+  const replies = [
+    answer([item({ name: 'מאפה פלאפלוני', query: 'מאפה פלאפלוני', grams: 80, kcal_per_100g: 333 })]),
+    answer([item({ name: 'פיתה', query: 'פיתה', grams: 100, unit_name: 'פיתה', unit_count: 1, unit_grams: 100, kcal_per_100g: 250 })]),
+    answer([], 'בסדר'),
+  ];
+  let n = 0;
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: replies[n++] }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('פיתה');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('לא');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-reply').last()).toContainText('בסדר');
+  expect(n).toBe(3);                                       // it went to Claude
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);   // the old question still waits
+  await expect(page.getByTestId('chat-confirm')).toBeEnabled();
+});
+
+test('chat: after declining a correction, a further correction still replaces the question it brought back', async ({ page }) => {
+  const bodies = [];
+  const replies = [
+    answer([item({ name: 'מאפה פלאפלוני', query: 'מאפה פלאפלוני', grams: 80, kcal_per_100g: 333 })]),
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({
+      items: [item({ name: 'מאפה גבינה פלאפלוני', query: 'מאפה גבינה פלאפלוני', grams: 90, kcal_per_100g: 340 })],
+      reply: '', replaces_previous: true }) }] },
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({
+      items: [item({ name: 'פיתה', query: 'פיתה', grams: 40, kcal_per_100g: 250 })],
+      reply: '', replaces_previous: true }) }] },
+  ];
+  await page.route('https://api.anthropic.com/**', (route) => {
+    bodies.push(route.request().postDataJSON());
+    return route.fulfill({ json: replies[bodies.length - 1] });
+  });
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('בעצם עם גבינה');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-reply').first()).toContainText('הוחלף');
+  await page.getByTestId('chat-drop').click();
+  await expect(page.getByTestId('chat-ask')).toContainText('מאפה פלאפלוני');
+  await page.getByTestId('chat-input').fill('בעצם 40 גרם פיתה');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-item')).toHaveCount(1);
+  expect(bodies[2].messages[0].content).toMatch(/"מאפה פלאפלוני" — ממתין לאישור, עוד לא נרשם \(אפשר לתקן\)/);
+  await expect(page.getByTestId('chat-ask')).toHaveCount(0);   // the question was replaced, not left to confirm
+  expect((await entries(page)).map((e) => e.name)).toEqual([expect.stringMatching(/^פיתה/)]);
+});
+
+test('chat: a plain decline still ends it: a later "כן" goes to Claude', async ({ page }) => {
+  let n = 0;
+  const replies = [
+    answer([item({ name: 'מאפה פלאפלוני', query: 'מאפה פלאפלוני', grams: 80, kcal_per_100g: 333 })]),
+    answer([item({ name: 'עוגיית פלאפלון', query: 'עוגיית פלאפלון', grams: 30, kcal_per_100g: 450 })]),
+    answer([], 'בסדר'),
+  ];
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: replies[n++] }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('עוגיית פלאפלון');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(2);
+  await page.getByTestId('chat-drop').last().click();
+  await page.getByTestId('chat-input').fill('כן');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-reply').last()).toContainText('בסדר');
+  expect(n).toBe(3);
+  expect(await entries(page)).toEqual([]);
+});

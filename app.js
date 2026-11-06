@@ -960,11 +960,18 @@ const CHAT_NO = /^(לא|ממש לא|אל תרשום|אל תרשמי|לא לרש�
 
 const askWaits = (m) => !!m?.ask && !m.replacedBy && !m.dropped && !m.saving;
 
-// The question on screen when a message is sent: the latest question still waiting among the replies
-// shown (not messages still being logged). It need not be the newest reply: declining or undoing a
-// correction brings an earlier question back. A question that appears later was not seen yet.
+// A reply that no longer counts when looking for "the latest one": replaced by a later message, or
+// declined / undone in a way that brought back the one it had replaced (that one is current again).
+// A plain decline or undo still counts: it ends the conversation about that food.
+const stepAside = (m) => !!m.replacedBy || ((m.dropped || m.undone) && !!(m.replacedAsk || m.replaced));
+
+// The question on screen when a message is sent: the latest reply shown that has not stepped aside, when
+// it is a waiting question. So a question brought back by declining or undoing its correction counts; any
+// other reply after a question (a saved food, Claude's own question, a plain decline) means the answer is
+// to that reply, and goes to Claude. A question that appears later was not seen yet.
 function shownAsk() {
-  return [...chat.msgs].reverse().find((m) => !m.me && !m.pending && askWaits(m)) || null;
+  const last = [...chat.msgs].reverse().find((m) => !m.me && !m.pending && !stepAside(m));
+  return askWaits(last) ? last : null;
 }
 
 function sendChat(text) {
@@ -1009,8 +1016,8 @@ async function chatContext(pending) {
           return { name: r.food.n, grams: gramsFor(r.food, r.amount, r.unit), where: [MEALS.find((x) => x.id === w.meal)?.label, dayWord(w.date)].filter(Boolean).join(' ') };
         }) : null,
       });
-      last = status === 'pending' ? reply : null;
-      lastAt = history.length - 1;
+      // (one that stepped aside leaves the one it brought back correctable; a plain decline blocks)
+      if (!stepAside(reply)) { last = status === 'pending' ? reply : null; lastAt = history.length - 1; }
       continue;
     }
     const rows = (reply.ids || []).map((id) => live.get(id)).filter(Boolean);
@@ -1022,7 +1029,11 @@ async function chatContext(pending) {
         name: e.name, grams: e.grams, where: [MEALS.find((x) => x.id === e.meal)?.label, dayWord(e.date)].filter(Boolean).join(' '),
       })) : null,
     });
-    if (reply.ids?.length) { last = status === 'logged' ? reply : null; lastAt = history.length - 1; }
+    // likewise for saved replies; one whose items were all deleted by hand blocks too
+    if (reply.ids?.length && !stepAside(reply)) {
+      last = status === 'logged' ? reply : null;
+      lastAt = history.length - 1;
+    }
   }
   if (last) history[lastAt].correctable = true;
   const shown = history.slice(-4);
@@ -1182,6 +1193,9 @@ async function saveAsk(m) {
   if (t?.replacedBy && t.replacedBy !== m.id) {
     m.saving = false;
     m.dropped = true;
+    // like any declined correction, it gives back the question it had replaced
+    const asked = m.replacedAsk && chat.msgs.find((x) => x.id === m.replacedAsk);
+    if (asked?.replacedBy === m.id) asked.replacedBy = null;
     m.text = 'לא נרשם: הרישום שרצית לתקן כבר תוקן בהודעה אחרת.';
     renderChat();
     return;
