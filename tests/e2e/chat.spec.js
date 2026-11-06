@@ -405,3 +405,27 @@ test('chat: a light counted piece of a new food asks; a vegetable in grams does 
   await page.getByTestId('chat-send').click();
   await expect(page.getByTestId('chat-doubt')).toContainText('כל יחידה שוקלת רק');
 });
+
+test('chat: declining a correction that asked brings back the question it replaced', async ({ page }) => {
+  const replies = [
+    answer([item({ name: 'מאפה פלאפלוני', query: 'מאפה פלאפלוני', grams: 80, kcal_per_100g: 333 })]),
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({
+      items: [item({ name: 'מאפה גבינה פלאפלוני', query: 'מאפה גבינה פלאפלוני', grams: 90, kcal_per_100g: 340 })],
+      reply: '', replaces_previous: true }) }] },
+  ];
+  let n = 0;
+  await page.route('https://api.anthropic.com/**', (route) => route.fulfill({ json: replies[n++] }));
+  await withKey(page);
+  await page.getByTestId('chat-input').fill('מאפה פלאפלוני');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-input').fill('בעצם עם גבינה');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-reply').first()).toContainText('הוחלף');
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await page.getByTestId('chat-drop').click();
+  // the first question is back with its buttons
+  await expect(page.getByTestId('chat-ask')).toHaveCount(1);
+  await expect(page.getByTestId('chat-ask')).toContainText('מאפה פלאפלוני');
+  expect(await entries(page)).toEqual([]);
+});

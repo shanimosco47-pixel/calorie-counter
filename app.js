@@ -958,9 +958,9 @@ async function renderChat() {
 const CHAT_YES = /^(כן|כן כן|נכון|בדיוק|תרשום|רשום|תרשמי|לרשום|אישור|מאשר|מאשרת|בסדר|סבבה|אוקיי|אוקי|ok|okay|yes|👍)[.!]*$/i;
 const CHAT_NO = /^(לא|ממש לא|אל תרשום|אל תרשמי|לא לרשום|ביטול|תבטל|תבטלי|no)[.!]*$/i;
 
-function waitingAsk() {
-  if (chat.msgs.some((m) => m.pending)) return null;
-  const last = [...chat.msgs].reverse().find((m) => !m.me);
+// The question waiting right before `pending`, if the latest reply before it is one.
+function waitingAsk(pending) {
+  const last = chat.msgs.slice(0, chat.msgs.indexOf(pending)).reverse().find((m) => !m.me && !m.pending);
   return last?.ask && !last.replacedBy && !last.dropped && !last.saving ? last : null;
 }
 
@@ -970,16 +970,6 @@ function sendChat(text) {
   stopListening();
   $('#chat-input').value = '';
   fitChatInput();
-  const ask = waitingAsk();
-  const answer = ask && (CHAT_YES.test(text) ? 'yes' : CHAT_NO.test(text) ? 'no' : '');
-  if (answer) {
-    // the answer shows below the question, which turns into the outcome (the history Claude sees pairs
-    // each message with the reply right after it, so the question stays with the message it answers)
-    chat.msgs.push({ id: ++chat.seq, me: true, text });
-    if (answer === 'yes') return confirmChat(ask.id);
-    dropChat(ask.id);
-    return chat.queue;
-  }
   chat.msgs.push({ id: ++chat.seq, me: true, text });
   const pending = { id: ++chat.seq, pending: true };
   chat.msgs.push(pending);
@@ -1102,6 +1092,17 @@ async function logChat(text, pending) {
     renderChat();
     if (state.view === 'today') renderToday();
   };
+  // a short yes or no answering the question that waits (checked in the queue's order, so also when it
+  // was typed while an earlier message was still being logged): the answer shows below the question,
+  // which turns into the outcome; the history Claude sees pairs each message with the reply after it
+  const ask = waitingAsk(pending);
+  const answer = ask && (CHAT_YES.test(text) ? 'yes' : CHAT_NO.test(text) ? 'no' : '');
+  if (answer) {
+    chat.msgs.splice(chat.msgs.indexOf(pending), 1);
+    if (answer === 'yes') { ask.saving = true; await saveAsk(ask); } else dropChat(ask.id);
+    renderChat();
+    return;
+  }
   try {
     const apiKey = await getSetting('apiKey', '');
     if (!apiKey) throw new VisionError('no_key', 'no key');
@@ -1163,33 +1164,40 @@ function confirmChat(id) {
   m.saving = true;
   renderChat();
   chat.busy++;
-  chat.queue = chat.queue.then(async () => {
-    if (m.replacedBy || m.dropped) return;
-    const { items, now, targetId, missed } = m.ask;
-    const t = targetId && chat.msgs.find((x) => x.id === targetId);
-    // what this question was going to correct was corrected by another message meanwhile: saving it too
-    // would log the food twice
-    if (t?.replacedBy && t.replacedBy !== m.id) {
-      m.saving = false;
-      m.dropped = true;
-      m.text = 'לא נרשם: הרישום שרצית לתקן כבר תוקן בהודעה אחרת.';
-      renderChat();
-      return;
-    }
-    const target = t && t.ids?.length && !t.undone && !t.replacedBy ? t : null;
-    const result = await commitChat(m.id, items, new Date(now), target, m.text, missed || (!!targetId && !target));
-    const at = chat.msgs.indexOf(m);
-    if (at >= 0) chat.msgs.splice(at, 1, { id: m.id, ...result });
-    renderChat();
-    if (state.view === 'today') renderToday();
-  }).finally(() => { chat.busy--; });
+  chat.queue = chat.queue.then(() => saveAsk(m)).finally(() => { chat.busy--; });
   return chat.queue;
+}
+
+// Saves a waiting question's items (in the chat's queue; m.saving is already set).
+async function saveAsk(m) {
+  if (m.replacedBy || m.dropped) return;
+  const { items, now, targetId, missed } = m.ask;
+  const t = targetId && chat.msgs.find((x) => x.id === targetId);
+  // what this question was going to correct was corrected by another message meanwhile: saving it too
+  // would log the food twice
+  if (t?.replacedBy && t.replacedBy !== m.id) {
+    m.saving = false;
+    m.dropped = true;
+    m.text = 'לא נרשם: הרישום שרצית לתקן כבר תוקן בהודעה אחרת.';
+    renderChat();
+    return;
+  }
+  const target = t && t.ids?.length && !t.undone && !t.replacedBy ? t : null;
+  const result = await commitChat(m.id, items, new Date(now), target, m.text, missed || (!!targetId && !target));
+  // (a question that itself replaced an earlier question keeps that link, so undo brings it back)
+  const at = chat.msgs.indexOf(m);
+  if (at >= 0) chat.msgs.splice(at, 1, { id: m.id, ...result, ...(m.replacedAsk && result.ids?.length ? { replacedAsk: m.replacedAsk } : {}) });
+  renderChat();
+  if (state.view === 'today') renderToday();
 }
 
 function dropChat(id) {
   const m = chat.msgs.find((x) => x.id === id);
   if (!m?.ask || m.replacedBy || m.saving) return;
   m.dropped = true;
+  // declining a correction that asked brings back the question it replaced
+  const asked = m.replacedAsk && chat.msgs.find((x) => x.id === m.replacedAsk);
+  if (asked?.replacedBy === m.id) asked.replacedBy = null;
   renderChat();
 }
 
@@ -1198,13 +1206,13 @@ async function undoChat(id) {
   const m = chat.msgs.find((x) => x.id === id);
   if (!m?.ids || m.undone || m.replacedBy) return;
   m.undone = true;
-  // undoing a correction of a waiting question brings the question back
-  const asked = m.replacedAsk && chat.msgs.find((x) => x.id === m.replacedAsk);
-  if (asked?.replacedBy === m.id) asked.replacedBy = null;
   // undoing a correction brings back what it replaced
   const old = m.replaced && chat.msgs.find((x) => x.id === m.replaced.id);
   if (old?.replacedBy === m.id) old.replacedBy = null;
   else if (old) return void (m.undone = false);
+  // and a waiting question it replaced
+  const asked = m.replacedAsk && chat.msgs.find((x) => x.id === m.replacedAsk);
+  if (asked?.replacedBy === m.id) asked.replacedBy = null;
   const prev = (await db.log.bulkGet(m.ids)).filter(Boolean);
   for (const e of prev) await remove('entries', e.id);
   if (old) for (const e of m.replaced.entries) await put('entries', e);
